@@ -1,0 +1,152 @@
+name: "EcoCharge Balanced Scheme"
+description: "Beacon Agentic Engineering Pipeline for EcoCharge Features (ASPICE-Aligned)"
+hitl_enabled: true
+
+nodes:
+  # 1. Classification & Scope
+  - id: "classifier_agent"
+    type: "agent"
+    agent_id: "classifier"
+    system_prompt: "Classify incoming KAP ticket (Bug, CR, New Feature). Output Classification Report."
+  
+  - id: "cr_agent"
+    type: "agent"
+    agent_id: "change_request_analyzer"
+    system_prompt: "Perform feasibility check against existing features and identify impact surface. Request novel algorithms if required."
+  
+  # 2. Concept & Requirements
+  - id: "thinking_agent"
+    type: "agent"
+    agent_id: "algorithmic_reasoner"
+    system_prompt: "Reason over problem to produce Concept Note (e.g., Weighted composite scoring for Balanced Scheme)."
+    requires_approval: true # Gateway 1: Concept Approval
+    
+  - id: "sysreq_agent"
+    type: "agent"
+    agent_id: "system_requirements"
+    system_prompt: "Generate system-level requirements delta based on approved Concept Note."
+    
+  - id: "swreq_agent"
+    type: "agent"
+    agent_id: "software_requirements"
+    system_prompt: "Translate system requirements into software-level specifications, APIs, and data models."
+    
+  - id: "ux_agent"
+    type: "agent"
+    agent_id: "ux_designer"
+    system_prompt: "Analyze existing UI flows and generate UX specification delta (e.g., new mode selector, sliders)."
+
+  # 3. Design & Architecture
+  - id: "figma_agent"
+    type: "mcp"
+    server: "figma-mcp"
+    action: "generate_wireframes"
+    parameters:
+      project: "EcoCharge"
+      
+  - id: "mock_ui_agent"
+    type: "agent"
+    agent_id: "ui_validator"
+    system_prompt: "Generate functional UI mock, run on Emulator, and validate layout consistency."
+    
+  - id: "architecture_agent"
+    type: "agent"
+    agent_id: "architect"
+    system_prompt: "Update High-Level and Low-Level Design documents (HLD/LLD) based on SWReqs and UI Report."
+
+  # 4. Implementation
+  - id: "coding_agent"
+    type: "agent"
+    agent_id: "software_engineer"
+    system_prompt: "Implement code according to LLD, handling edge cases. Commit to feature branch."
+    tools: ["gerrit-mcp"]
+
+  # 5. Testing & Validation
+  - id: "unit_test_agent"
+    type: "agent"
+    agent_id: "unit_tester"
+    system_prompt: "Write unit tests covering boundaries and edge cases."
+    
+  - id: "integration_test_agent"
+    type: "agent"
+    agent_id: "integration_tester"
+    system_prompt: "Write integration tests covering the full cycle."
+    
+  - id: "review_agent"
+    type: "agent"
+    agent_id: "code_reviewer"
+    system_prompt: "Perform code review against MISRA/CERT guidelines and auto-fix findings."
+    requires_approval: true # Gateway 2: Code Review Approval
+
+  # 6. CI/CD & Traceability
+  - id: "app_builder_agent"
+    type: "mcp"
+    server: "jenkins-mcp"
+    action: "trigger_build"
+    
+  - id: "emulator_validation_agent"
+    type: "tool"
+    tool_name: "run_emulator_tests"
+    
+  - id: "traceability_agent"
+    type: "agent"
+    agent_id: "traceability_mapper"
+    system_prompt: "Stitch together all artifacts for ASPICE upstream/downstream coverage matrix."
+    
+  - id: "release_agent"
+    type: "agent"
+    agent_id: "release_manager"
+    system_prompt: "Verify release gates, publish APK to cloud storage, and send MQTT OTA notification."
+
+edges:
+  # Sequential Initialization
+  - from: "classifier_agent"
+    to: "cr_agent"
+  - from: "cr_agent"
+    to: "thinking_agent"
+  - from: "thinking_agent"
+    to: "sysreq_agent"
+    
+  # Parallel Requirements Generation
+  - from: "sysreq_agent"
+    to: "swreq_agent"
+  - from: "sysreq_agent"
+    to: "ux_agent"
+    
+  # UX / UI Flow
+  - from: "ux_agent"
+    to: "figma_agent"
+  - from: "figma_agent"
+    to: "mock_ui_agent"
+    
+  # Converge on Architecture
+  - from: "swreq_agent"
+    to: "architecture_agent"
+  - from: "mock_ui_agent"
+    to: "architecture_agent"
+    
+  # Coding
+  - from: "architecture_agent"
+    to: "coding_agent"
+    
+  # Parallel Testing
+  - from: "coding_agent"
+    to: "unit_test_agent"
+  - from: "coding_agent"
+    to: "integration_test_agent"
+    
+  # Converge on Review
+  - from: "unit_test_agent"
+    to: "review_agent"
+  - from: "integration_test_agent"
+    to: "review_agent"
+    
+  # CI/CD and Release
+  - from: "review_agent"
+    to: "app_builder_agent"
+  - from: "app_builder_agent"
+    to: "emulator_validation_agent"
+  - from: "emulator_validation_agent"
+    to: "traceability_agent"
+  - from: "traceability_agent"
+    to: "release_agent"

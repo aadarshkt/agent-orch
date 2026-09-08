@@ -1,0 +1,12 @@
+langgraph
+langgraph-checkpoint-postgres
+langchain-core
+pydantic
+pyyaml
+psycopg
+psycopg-pool
+fastapi
+uvicorn
+sqlalchemy
+sse-starlette
+mcp

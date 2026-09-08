@@ -1,0 +1,26 @@
+name: "Master Workflow"
+description: "A comprehensive test workflow"
+hitl_enabled: true
+nodes:
+  - id: "node_1_agent"
+    type: "agent"
+    agent_id: "researcher"
+    system_prompt: "You are a research assistant."
+  - id: "node_2_mcp"
+    type: "mcp"
+    server: "github"
+    action: "get_repo_info"
+    requires_approval: true
+  - id: "node_3_pipeline"
+    type: "pipeline"
+    pipeline_id: "data_processing"
+    steps:
+      - "clean"
+      - "transform"
+      - "load"
+edges:
+  - from: "node_1_agent"
+    to: "node_2_mcp"
+  - from: "node_2_mcp"
+    to: "node_3_pipeline"
+    condition: "success"
