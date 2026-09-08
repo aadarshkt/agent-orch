@@ -11,3 +11,4 @@ sqlalchemy
 sse-starlette
 mcp
 python-dotenv
+jsonschema

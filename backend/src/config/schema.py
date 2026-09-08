@@ -1,53 +1,31 @@
-from typing import List, Literal, Optional, Union, Dict, Any, Annotated
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, ConfigDict
 
-class BaseNodeConfig(BaseModel):
-    id: str
-    type: str
+
+class NodeConfig(BaseModel):
+    """
+    Universal node config used in workflows.
+    
+    Each node references an agent_id (a registered Agent instance).
+    The agent's type-specific params are resolved from the DB at execution time,
+    not stored inline in the workflow config.
+    """
+    id: str                                  # Unique node ID within the workflow
+    agent_id: str                            # References a registered Agent's ID
     requires_approval: bool = False
 
-class AgentNodeConfig(BaseNodeConfig):
-    type: Literal["agent"]
-    agent_id: str
-    system_prompt: Optional[str] = None
-    tools: Optional[List[str]] = None
-
-class PipelineNodeConfig(BaseNodeConfig):
-    type: Literal["pipeline"]
-    pipeline_id: str
-    steps: List[str]
-
-class ToolNodeConfig(BaseNodeConfig):
-    type: Literal["tool"]
-    tool_name: str
-    parameters: Optional[Dict[str, Any]] = None
-
-class MCPNodeConfig(BaseNodeConfig):
-    type: Literal["mcp"]
-    server: str
-    action: str
-    parameters: Optional[Dict[str, Any]] = None
-
-NodeConfigType = Annotated[
-    Union[
-        AgentNodeConfig, 
-        PipelineNodeConfig, 
-        ToolNodeConfig, 
-        MCPNodeConfig
-    ],
-    Field(discriminator="type")
-]
 
 class EdgeConfig(BaseModel):
     from_node: str = Field(alias="from")
     to_node: str = Field(alias="to")
     condition: Optional[str] = None
-    
+
     model_config = ConfigDict(populate_by_name=True)
+
 
 class WorkflowConfig(BaseModel):
     name: str
     description: Optional[str] = None
     hitl_enabled: bool = False
-    nodes: List[NodeConfigType]
+    nodes: List[NodeConfig]
     edges: List[EdgeConfig]

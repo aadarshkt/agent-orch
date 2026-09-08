@@ -6,11 +6,13 @@ nodes:
     type: "agent"
     agent_id: "researcher"
     system_prompt: "You are a research assistant."
+    execution_delay: 3
   - id: "node_2_mcp"
     type: "mcp"
     server: "github"
     action: "get_repo_info"
     requires_approval: true
+    execution_delay: 5
   - id: "node_3_pipeline"
     type: "pipeline"
     pipeline_id: "data_processing"
