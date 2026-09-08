@@ -5,11 +5,24 @@ from src.engine.state import WorkflowState
 
 def make_node_func(node_config) -> Callable:
     def node_func(state: WorkflowState) -> WorkflowState:
-        print(f"Executing node: {node_config.id} of type: {node_config.type}")
-        messages = state.get("messages", [])
-        new_messages = list(messages) if messages else []
-        new_messages.append({"role": "system", "content": f"Executed {node_config.id}"})
-        return {"messages": new_messages, "current_step": node_config.id}
+        try:
+            print(f"Executing node: {node_config.id} of type: {node_config.type}")
+            messages = state.get("messages", [])
+            new_messages = list(messages) if messages else []
+            new_messages.append({"role": "system", "content": f"Executed {node_config.id}"})
+            return {
+                "messages": new_messages, 
+                "current_step": node_config.id,
+                "status": "completed",
+                "error": None
+            }
+        except Exception as e:
+            print(f"Error executing node {node_config.id}: {str(e)}")
+            return {
+                "error": str(e),
+                "status": "failed",
+                "current_step": node_config.id
+            }
     return node_func
 
 def compile_workflow(config: WorkflowConfig, checkpointer: Any = None):

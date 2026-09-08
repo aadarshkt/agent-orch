@@ -4,3 +4,13 @@
 /phase_1_plan.md
 /phase_2_plan.md
 /phase_3_plan.md
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

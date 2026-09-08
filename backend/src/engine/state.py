@@ -5,3 +5,5 @@ class WorkflowState(TypedDict):
     current_step: Optional[str]
     artifacts: Dict[str, Any]
     approval_status: Optional[str]
+    error: Optional[str]
+    status: Optional[str]
