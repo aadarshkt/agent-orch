@@ -10,3 +10,4 @@ uvicorn
 sqlalchemy
 sse-starlette
 mcp
+python-dotenv

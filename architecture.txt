@@ -1,0 +1,20 @@
+sequenceDiagram
+    autonumber
+    actor Browser as Frontend (Browser)
+    participant API as FastAPI Main Thread (Async Event Loop)
+    participant Bus as EventBus (asyncio.Queue)
+    participant Worker as Background Worker (OS Thread - Sync)
+
+    Browser->>API: POST /workflows/{id}/execute
+    Note over API: 1. Grab reference to main loop<br/>loop = asyncio.get_running_loop()
+    API->>Worker: background_tasks.add_task(run_workflow_sync, ..., loop)
+    API-->>Browser: 200 OK {"status": "started", "thread_id": "..."}
+
+    Browser->>API: GET /events/stream?thread_id=... (SSE)
+    API->>Bus: await queue.get() (waits on Event Loop)
+
+    Note over Worker: Runs LangGraph synchronously in background<br/>for event in graph.stream(...):
+    Worker->>API: loop.call_soon_threadsafe(queue.put_nowait, event)
+    Note over API: Event Loop safely puts event into queue
+    Bus-->>API: queue.get() unblocks
+    API-->>Browser: SSE pushes event: {"event": "agent", ...}
