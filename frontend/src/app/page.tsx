@@ -1,20 +1,16 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
+
+interface WorkflowEvent {
+  event: string;
+  data: string;
+}
 
 export default function Dashboard() {
-  const [capabilities, setCapabilities] = useState<any>(null);
   const [executing, setExecuting] = useState(false);
   const [threadId, setThreadId] = useState<string | null>(null);
-  const [events, setEvents] = useState<any[]>([]);
-
-  useEffect(() => {
-    // Fetch capabilities on load
-    fetch('http://localhost:8000/capabilities')
-      .then(res => res.json())
-      .then(data => setCapabilities(data))
-      .catch(err => console.error("Error fetching capabilities", err));
-  }, []);
+  const [events, setEvents] = useState<WorkflowEvent[]>([]);
 
   const launchWorkflow = () => {
     setExecuting(true);
@@ -56,29 +52,14 @@ export default function Dashboard() {
     <main className="container">
       <h1 className="heading" style={{ fontSize: '2.5rem', marginBottom: '2rem' }}>Agent Orchestrator</h1>
       
-      <div className="flex gap-4" style={{ marginBottom: '2rem' }}>
-        <div className="card glass flex-col justify-between" style={{ flex: 1 }}>
-          <h2 className="heading">Capabilities</h2>
-          {capabilities ? (
-            <ul style={{ paddingLeft: '1.2rem', color: 'var(--text-muted)' }}>
-              <li>Agents: {capabilities.agents.join(', ')}</li>
-              <li>Pipelines: {capabilities.pipelines.join(', ')}</li>
-              <li>MCP Tools: {capabilities.mcp_tools.length}</li>
-            </ul>
-          ) : (
-            <p className="text-muted">Loading capabilities...</p>
-          )}
-        </div>
-        
-        <div className="card glass flex-col items-center justify-between" style={{ flex: 1, textAlign: 'center' }}>
-          <h2 className="heading">Workflow Launcher</h2>
-          <p className="text-muted text-sm mt-4" style={{ marginBottom: '1.5rem' }}>
-            Execute the master configuration workflow and monitor live progression.
-          </p>
-          <button className="btn" onClick={launchWorkflow} disabled={executing}>
-            {executing ? 'Executing...' : 'Launch Master Workflow'}
-          </button>
-        </div>
+      <div className="card glass flex-col items-center justify-between" style={{ marginBottom: '2rem', textAlign: 'center' }}>
+        <h2 className="heading">Workflow Launcher</h2>
+        <p className="text-muted text-sm mt-4" style={{ marginBottom: '1.5rem' }}>
+          Execute the master configuration workflow and monitor live progression.
+        </p>
+        <button className="btn" onClick={launchWorkflow} disabled={executing}>
+          {executing ? 'Executing...' : 'Launch Master Workflow'}
+        </button>
       </div>
 
       {threadId && (

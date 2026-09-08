@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from src.db.session import init_db
-from src.api.routes import workflows, capabilities, mcp, events
+from src.api.routes import workflows, mcp, events
 from psycopg_pool import ConnectionPool
 from langgraph.checkpoint.postgres import PostgresSaver
 
@@ -53,7 +53,6 @@ app.add_middleware(
 )
 
 app.include_router(workflows.router, prefix="/workflows", tags=["Workflows"])
-app.include_router(capabilities.router, prefix="/capabilities", tags=["Capabilities"])
 app.include_router(mcp.router, prefix="/mcp-registry", tags=["MCP Registry"])
 app.include_router(events.router, prefix="/events", tags=["Events"])
 
