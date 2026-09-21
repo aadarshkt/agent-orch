@@ -1,0 +1,99 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Single self-contained workflow demonstrating every agent type and its
+# dependencies.
+#
+# Types covered:
+#   cloud_agent      - remote LLM agent (stub; see note below)
+#   cli_agent        - local CLI running in a container (implemented)
+#   script_runner    - single python script (implemented)
+#   pipeline_trigger - trigger a CI job (NOT yet implemented)
+#
+# Import (script_runner + cli_agent work today; pipeline_trigger is rejected
+# until its executor is added):
+#   POST /workflows/import  { "yaml_path": "config/demo_all_agents.yaml" }
+# ─────────────────────────────────────────────────────────────────────────────
+version: 1
+
+# ── Dependencies: named runtime presets ──────────────────────────────────────
+# Everything an agent needs to run (image, binary, endpoint, env, limits) is
+# declared here as data. Agents reference these by name; the frontend exposes
+# them via GET /runtimes.
+runtimes:
+  # CLI runtime: Docker image with the binary + packages baked in.
+  # Dynamic inputs (repo, branch, prompt, env) are injected at execution.
+  - name: claude-cli
+    kind: cli
+    image: ghcr.io/eco/claude-agent:latest
+    command: ["claude", "-p"]
+    env: {}
+    resource_limits: { cpus: "1.0", memory: "512m" }
+    timeout: 300
+
+  # Cloud runtime: remote agent endpoint + model.
+  # NOTE: the cloud_agent executor is currently a stub and reads `model` inline
+  # from inputs; resolving endpoint/model from this runtime is forward-looking.
+  - name: cloud-review
+    kind: cloud
+    endpoint: https://agent.eco.dev/review
+    model: gemini-pro
+    env: {}
+
+  # Cloud runtime for a CI server (used by the not-yet-built pipeline_trigger).
+  - name: jenkins
+    kind: cloud
+    endpoint: https://jenkins.eco.dev
+    env: { JENKINS_TOKEN: "${JENKINS_TOKEN}" }
+
+# ── Agents (instances): type + optional runtime + inputs ─────────────────────
+agents:
+  # 1. Cloud agent - classify a ticket. (stub executor)
+  classifier:
+    type: cloud_agent
+    runtime: cloud-review
+    inputs:
+      system_prompt: "Classify the incoming KAP ticket (Bug/CR/Feature)."
+      gitlab_urls: ["https://gitlab.eco/eco/kap.git"]
+      model: gemini-pro
+
+  # 2. CLI agent - generate code inside a container. (implemented)
+  coder:
+    type: cli_agent
+    runtime: claude-cli
+    inputs:
+      repo_urls: ["https://gitlab.eco/eco/app.git"]
+      branch: "feature/ecocharge"
+      prompt_url: "https://gitlab.eco/eco/skills/-/raw/main/prompt.md"
+      skill_urls: ["https://gitlab.eco/eco/skills/-/raw/main/review.md"]
+      env: { EXTRA_FLAG: "1" }
+      timeout: 300
+
+  # 3. Script runner - self-contained, no runtime. (implemented)
+  preflight:
+    type: script_runner
+    inputs:
+      script_path: "scripts/preflight.py"
+      timeout: 60
+
+  # 4. Pipeline runner - trigger a CI job. (NOT yet implemented)
+  build:
+    type: pipeline_trigger
+    runtime: jenkins
+    inputs:
+      job_name: ecocharge-build
+      params: { branch: "feature/ecocharge" }
+      wait_for_completion: true
+
+# ── The graph ────────────────────────────────────────────────────────────────
+workflow:
+  name: "Full Pipeline Demo"
+  description: "Cloud -> script -> CLI -> pipeline, all dependencies listed."
+  hitl_enabled: true
+  nodes:
+    - { id: classify, agent: classifier, requires_approval: false }
+    - { id: preflight, agent: preflight, requires_approval: false }
+    - { id: coding, agent: coder, requires_approval: false }
+    - { id: build, agent: build, requires_approval: true }
+  edges:
+    - { from: classify, to: preflight, condition: success }
+    - { from: preflight, to: coding, condition: success }
+    - { from: coding, to: build, condition: success }

@@ -12,3 +12,6 @@
 - Prefers happy-path-first scaffolding: defer validation and hardening (use placeholder/stub entries for now) until the core flow works. Confidence: 0.7
 - Treats Docker image packaging (build/push of a CLI binary + runtime + packages) as part of CLI agent onboarding, not just defining runtime presets. Confidence: 0.6
  Prefers the assistant to proactively generate additional open design questions/edge cases ("create more such questions") rather than only answering the question asked. Confidence: 0.7
+- Prefers implementation work to be done on a separate feature branch that is merged into master/main later, rather than committing changes directly to the main branch. Confidence: 0.85
+- Prefers batching remaining work: complete all outstanding phases/tasks and commit them in one go, rather than stopping for incremental check-ins or confirmations between phases. Confidence: 0.8
+- Prefers comprehensive, forward-looking example configs that include not-yet-implemented components (clearly annotated as pending/stub) rather than omitting them, so the full target workflow is visible in one place. Confidence: 0.6
