@@ -5,9 +5,10 @@ instances of it (via UI or YAML), and the migration/seeding decision. It uses a
 `pipeline_trigger` executor (trigger a CI/Jenkins job) as the running example,
 but the procedure is identical for any new type.
 
-> Note on state: the "self-describing executor" and "YAML as source of truth"
-> parts below are the target design. The current code still uses a seeded
-> `node_types` table and DB-driven workflows. See "Current vs target" at the end.
+> Note on state: the self-describing executor registry and YAML import are now
+> implemented (branch `feat/yaml-driven-cli-onboarding`). Node types are derived
+> from the executor registry (no hand-maintained seed), and workflows can be
+> imported from self-contained YAML. The DB remains a projection for the UI.
 
 ## 1. Mental model
 
@@ -308,12 +309,43 @@ This pins the dependency instead of relying on "the previous node pushed
 somewhere." Optionally add a `depends_on` field to the node schema to make the
 relationship visible in YAML.
 
-## 12. Current vs target
+## 12. Implementation status
 
-| Area | Current | Target |
+| Area | Before | Now |
 |---|---|---|
-| Type metadata | `seed_node_types.py` + DB `node_types` | executor class `input_schema` (self-describing) |
+| Type metadata | hand-maintained `seed_node_types.py` + DB `node_types` | derived from executor registry |
 | Registration | `@register_executor` + manual seed entry | `@register_executor` only |
-| Workflow source | DB tables | YAML file (DB as projection) |
-| Runtime concept | none | `runtimes:` presets + `runtime_kind` |
-| UI form | renders DB `config_schema` | renders executor `input_schema` |
+| Workflow source | DB tables | YAML import (`POST /workflows/import`) + DB projection |
+| Runtime concept | none | `runtimes:` presets + `runtime_kind` + `GET /runtimes` |
+| UI form | rendered DB `config_schema` | renders executor `input_schema` + runtime dropdown |
+
+## 13. Packaging a CLI agent image
+
+One image per agent. The image holds the static runtime (binary, language
+runtime, packages, bundled skills); dynamic inputs (repo, branch, prompt, env)
+are injected at execution.
+
+1. Author a `Dockerfile` from `backend/docker/agent.Dockerfile`, baking in the
+   CLI binary + packages.
+2. Build and push: `backend/docker/build.sh <registry>/<image> [context]`.
+   The executor pulls it via `docker run` using credentials from `backend/.env`
+   (`REGISTRY_USERNAME`, `REGISTRY_PASSWORD`, `REGISTRY_URL`).
+3. Register it as a runtime in `backend/config/runtimes.yaml`:
+
+   ```yaml
+   - name: my-agent
+     kind: cli
+     image: ghcr.io/org/my-agent:latest
+     command: ["python", "-m", "my_agent"]
+   ```
+
+4. Reference it from an agent in a workflow YAML via `runtime: my-agent`.
+
+## 14. HITL after successful completion
+
+HITL for a CLI run is expressed through graph ordering, not a new mechanism: a
+CLI agent node runs to completion, then a `reviewer` node with
+`requires_approval: true` (or any approval node) follows it. The orchestrator's
+`interrupt_before` pauses at the review node after the CLI node succeeds. Edge
+conditions (e.g. `condition: success`) ensure the review only runs when the CLI
+node completed cleanly.

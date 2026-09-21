@@ -14,6 +14,33 @@ from src.registry.executor_registry import register_executor
 class ScriptRunnerExecutor(BaseExecutor):
     """Runs a Python script or shell command as a subprocess."""
 
+    runtime_kind = "none"
+    display_name = "Script Runner"
+    icon = "terminal"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "script_path": {
+                "type": "string",
+                "title": "Script Path",
+                "description": "Path to the Python script file to execute",
+            },
+            "inline_script": {
+                "type": "string",
+                "title": "Inline Script",
+                "description": "Python code to execute directly (alternative to script_path)",
+                "ui:widget": "textarea",
+            },
+            "timeout": {
+                "type": "number",
+                "default": 60,
+                "title": "Timeout (seconds)",
+                "description": "Maximum execution time before the script is killed",
+            },
+        },
+        "required": [],
+    }
+
     async def execute(
         self,
         node_config: Dict[str, Any],

@@ -1,0 +1,42 @@
+# Self-contained workflow: runtimes + agents + graph in one file.
+# Import via POST /workflows/import with yaml_path=config/ecocharge_cli_workflow.yaml
+version: 1
+
+runtimes:
+  - name: claude-cli
+    kind: cli
+    image: ghcr.io/eco/claude-agent:latest
+    command: ["claude", "-p"]
+    env: {}
+    resource_limits:
+      cpus: "1.0"
+      memory: "512m"
+    timeout: 300
+
+agents:
+  coder:
+    type: cli_agent
+    runtime: claude-cli
+    inputs:
+      repo_urls:
+        - "https://gitlab.eco/eco/app.git"
+      branch: "feature/ecocharge"
+      prompt_url: "https://gitlab.eco/eco/skills/-/raw/main/prompt.md"
+      skill_urls:
+        - "https://gitlab.eco/eco/skills/-/raw/main/review.md"
+
+  committer:
+    type: git_commit
+    inputs:
+      source_node_id: coding
+      branch: "feature/ecocharge"
+
+workflow:
+  name: "EcoCharge CLI Pipeline"
+  description: "CLI agent generates code, then commits it."
+  hitl_enabled: true
+  nodes:
+    - { id: coding, agent: coder, requires_approval: false }
+    - { id: commit, agent: committer, requires_approval: true }
+  edges:
+    - { from: coding, to: commit, condition: success }

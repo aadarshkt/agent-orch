@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { API_BASE } from '@/lib/api';
 
 interface JSONSchemaProperty {
   type: string;
@@ -102,6 +103,11 @@ function renderField(
     );
   }
 
+  // String with runtime selector (fetches /runtimes)
+  if (prop.type === 'string' && prop['ui:widget'] === 'runtime') {
+    return <RuntimeSelect value={value} onChange={(v) => onChange(fieldName, v)} disabled={disabled} />;
+  }
+
   // Simple string
   if (prop.type === 'string') {
     return (
@@ -166,6 +172,42 @@ function renderField(
       placeholder={prop.description || ''}
       disabled={disabled}
     />
+  );
+}
+
+// ───── Runtime selector component ─────
+function RuntimeSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: any;
+  onChange: (val: string) => void;
+  disabled: boolean;
+}) {
+  const [runtimes, setRuntimes] = useState<{ name: string; kind: string }[]>([]);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/runtimes/`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => setRuntimes(Array.isArray(data) ? data : []))
+      .catch(() => setRuntimes([]));
+  }, []);
+
+  return (
+    <select
+      className="form-input form-select"
+      value={value || ''}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+    >
+      <option value="">Select runtime...</option>
+      {runtimes.map((rt) => (
+        <option key={rt.name} value={rt.name}>
+          {rt.name}
+        </option>
+      ))}
+    </select>
   );
 }
 

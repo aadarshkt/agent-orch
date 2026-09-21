@@ -7,6 +7,7 @@ each agent's node type is looked up, and the correct executor is dispatched.
 """
 import uuid
 import asyncio
+import yaml
 from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks, Request, HTTPException, Depends
 from pydantic import BaseModel
@@ -15,10 +16,13 @@ from sqlalchemy.orm import Session
 
 from src.db.session import get_db
 from src.db.models import WorkflowModel, AgentModel, NodeTypeModel, WorkflowExecutionModel
-from src.config.schema import WorkflowConfig, NodeConfig, EdgeConfig
+from src.config.schema import WorkflowConfig, NodeConfig, EdgeConfig, WorkflowSpec
+from src.config.parser import load_workflow_spec, parse_workflow_spec
 from src.engine.orchestrator import compile_workflow
 from src.engine.pubsub import event_bus
 from src.registry.base_executor import ExecutionContext
+from src.registry.runtime_registry import register_runtimes, resolve_runtime
+from src.registry.executor_registry import list_executors
 
 # Ensure executors are registered on import
 import src.executors  # noqa: F401
@@ -56,6 +60,11 @@ class UpdateWorkflowRequest(BaseModel):
     hitl_enabled: Optional[bool] = None
     nodes: Optional[List[WorkflowNodeInput]] = None
     edges: Optional[List[WorkflowEdgeInput]] = None
+
+
+class ImportWorkflowRequest(BaseModel):
+    yaml_path: Optional[str] = None
+    yaml_content: Optional[str] = None
 
 
 # ──────────────────────────────────────────────
@@ -102,6 +111,143 @@ def create_workflow(req: CreateWorkflowRequest, db: Session = Depends(get_db)):
         "nodes": workflow.nodes,
         "edges": workflow.edges,
         "created_at": workflow.created_at.isoformat() if workflow.created_at else None,
+    }
+
+
+def _import_workflow_spec(spec: WorkflowSpec, db: Session) -> WorkflowModel:
+    """Validate and upsert a self-contained WorkflowSpec into agents + workflow."""
+    # 1. Register embedded runtimes into the in-memory registry
+    register_runtimes(spec.runtimes)
+
+    # 2. Validate agent type + runtime references
+    valid_executors = {e["key"] for e in list_executors()}
+    for agent_name, agent_def in spec.agents.items():
+        if agent_def.type not in valid_executors:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Agent '{agent_name}': unknown type '{agent_def.type}'. "
+                       f"Available: {sorted(valid_executors)}",
+            )
+        if agent_def.runtime:
+            try:
+                resolve_runtime(agent_def.runtime)
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=f"Agent '{agent_name}': {e}")
+
+    # 3. Validate node -> agent references
+    node_ids = {n.id for n in spec.workflow.nodes}
+    for node in spec.workflow.nodes:
+        if node.agent not in spec.agents:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Node '{node.id}' references unknown agent '{node.agent}'.",
+            )
+
+    # 4. Validate git_commit source_node_id references a real node
+    for node in spec.workflow.nodes:
+        agent_def = spec.agents[node.agent]
+        if agent_def.type == "git_commit":
+            src = agent_def.inputs.get("source_node_id")
+            if src and src not in node_ids:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Agent '{node.agent}': source_node_id '{src}' "
+                           f"not found in workflow nodes.",
+                )
+
+    # 5. Upsert agents
+    agents_by_name: Dict[str, AgentModel] = {}
+    for agent_name, agent_def in spec.agents.items():
+        params = dict(agent_def.inputs)
+        if agent_def.runtime:
+            params["runtime"] = agent_def.runtime
+
+        agent = db.query(AgentModel).filter(AgentModel.name == agent_name).first()
+        if agent:
+            agent.node_type_key = agent_def.type
+            agent.params = params
+        else:
+            agent = AgentModel(
+                id=str(uuid.uuid4()),
+                name=agent_name,
+                node_type_key=agent_def.type,
+                params=params,
+            )
+            db.add(agent)
+        agents_by_name[agent_name] = agent
+    db.flush()
+
+    # 6. Build nodes
+    nodes = [
+        {
+            "id": node.id,
+            "agent_id": agents_by_name[node.agent].id,
+            "requires_approval": node.requires_approval,
+        }
+        for node in spec.workflow.nodes
+    ]
+
+    edges = [
+        {"from": e.from_node, "to": e.to_node, "condition": e.condition}
+        for e in spec.workflow.edges
+    ]
+
+    # 7. Upsert workflow
+    workflow = (
+        db.query(WorkflowModel)
+        .filter(WorkflowModel.name == spec.workflow.name)
+        .first()
+    )
+    if workflow:
+        workflow.description = spec.workflow.description
+        workflow.hitl_enabled = spec.workflow.hitl_enabled
+        workflow.nodes = nodes
+        workflow.edges = edges
+        workflow.updated_at = datetime.utcnow()
+    else:
+        workflow = WorkflowModel(
+            id=str(uuid.uuid4()),
+            name=spec.workflow.name,
+            description=spec.workflow.description,
+            hitl_enabled=spec.workflow.hitl_enabled,
+            nodes=nodes,
+            edges=edges,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(workflow)
+
+    db.commit()
+    db.refresh(workflow)
+    return workflow
+
+
+@router.post("/import")
+def import_workflow(req: ImportWorkflowRequest, db: Session = Depends(get_db)):
+    """Import a self-contained workflow YAML (path or inline content)."""
+    if req.yaml_content:
+        try:
+            data = yaml.safe_load(req.yaml_content)
+        except yaml.YAMLError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+        if not data:
+            raise HTTPException(status_code=400, detail="YAML content is empty.")
+        spec = parse_workflow_spec(data)
+    elif req.yaml_path:
+        try:
+            spec = load_workflow_spec(req.yaml_path)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+    else:
+        raise HTTPException(status_code=400, detail="Provide yaml_path or yaml_content.")
+
+    workflow = _import_workflow_spec(spec, db)
+    return {
+        "id": workflow.id,
+        "name": workflow.name,
+        "status": "ready",
+        "nodes": workflow.nodes,
+        "edges": workflow.edges,
     }
 
 

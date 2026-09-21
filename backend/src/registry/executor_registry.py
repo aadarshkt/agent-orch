@@ -54,13 +54,33 @@ def get_executor(key: str) -> BaseExecutor:
     return cls()
 
 
+def _derive_default_config(input_schema: dict) -> dict:
+    """Collect per-field ``default`` values from an input_schema."""
+    if not input_schema or "properties" not in input_schema:
+        return {}
+    return {
+        key: prop["default"]
+        for key, prop in input_schema["properties"].items()
+        if isinstance(prop, dict) and "default" in prop
+    }
+
+
 def list_executors() -> List[dict]:
     """Return metadata about all registered executors (for UI dropdowns / API)."""
-    return [
-        {
-            "key": key,
-            "name": cls.__name__,
-            "description": (cls.__doc__ or "").strip(),
-        }
-        for key, cls in _EXECUTOR_REGISTRY.items()
-    ]
+    result = []
+    for key, cls in _EXECUTOR_REGISTRY.items():
+        input_schema = getattr(cls, "input_schema", None)
+        result.append(
+            {
+                "key": key,
+                "name": cls.__name__,
+                "description": (cls.__doc__ or "").strip(),
+                "display_name": getattr(cls, "display_name", key),
+                "icon": getattr(cls, "icon", None),
+                "runtime_kind": getattr(cls, "runtime_kind", None),
+                "input_schema": input_schema,
+                "default_config": getattr(cls, "default_config", None)
+                or _derive_default_config(input_schema),
+            }
+        )
+    return result

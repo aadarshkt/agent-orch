@@ -14,6 +14,35 @@ from src.registry.executor_registry import register_executor
 class CloudAgentExecutor(BaseExecutor):
     """Calls a cloud-hosted agent API with artifacts pulled from git repos."""
 
+    runtime_kind = "cloud"
+    display_name = "Cloud Agent"
+    icon = "cloud"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "system_prompt": {
+                "type": "string",
+                "title": "System Prompt",
+                "description": "Instructions for the cloud agent",
+                "ui:widget": "textarea",
+            },
+            "gitlab_urls": {
+                "type": "array",
+                "items": {"type": "string", "format": "uri"},
+                "title": "GitLab Repository URLs",
+                "description": "Repository URLs to pull artifacts from",
+            },
+            "model": {
+                "type": "string",
+                "enum": ["gemini-pro", "gemini-flash", "claude-sonnet"],
+                "default": "gemini-pro",
+                "title": "Model",
+                "description": "LLM model to use",
+            },
+        },
+        "required": ["system_prompt", "gitlab_urls"],
+    }
+
     async def execute(
         self,
         node_config: Dict[str, Any],

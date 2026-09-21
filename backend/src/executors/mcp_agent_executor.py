@@ -15,6 +15,32 @@ from src.registry.executor_registry import register_executor
 class MCPAgentExecutor(BaseExecutor):
     """Cloud agent that uses MCP tool servers (e.g., Figma, GitHub)."""
 
+    runtime_kind = "mcp"
+    display_name = "MCP Agent"
+    icon = "plug"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "system_prompt": {
+                "type": "string",
+                "title": "System Prompt",
+                "description": "Instructions for the MCP agent",
+                "ui:widget": "textarea",
+            },
+            "mcp_server_name": {
+                "type": "string",
+                "title": "MCP Server",
+                "description": "Name of the MCP server to connect to (e.g., figma, github)",
+            },
+            "action": {
+                "type": "string",
+                "title": "Action",
+                "description": "The action to perform on the MCP server",
+            },
+        },
+        "required": ["system_prompt", "mcp_server_name"],
+    }
+
     async def execute(
         self,
         node_config: Dict[str, Any],

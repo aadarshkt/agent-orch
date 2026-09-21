@@ -14,6 +14,34 @@ from src.registry.executor_registry import register_executor
 class ReviewerExecutor(BaseExecutor):
     """Generates a review report and optionally posts to GitLab or returns to user."""
 
+    runtime_kind = "none"
+    display_name = "Reviewer"
+    icon = "clipboard-check"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "review_prompt": {
+                "type": "string",
+                "title": "Review Prompt",
+                "description": "Instructions for the review (what to look for, criteria, etc.)",
+                "ui:widget": "textarea",
+            },
+            "output_target": {
+                "type": "string",
+                "enum": ["user", "gitlab_mr_comment", "gitlab_issue"],
+                "default": "user",
+                "title": "Output Target",
+                "description": "Where to send the review report",
+            },
+            "gitlab_project": {
+                "type": "string",
+                "title": "GitLab Project",
+                "description": "GitLab project path (required if output target is GitLab)",
+            },
+        },
+        "required": ["review_prompt"],
+    }
+
     async def execute(
         self,
         node_config: Dict[str, Any],

@@ -9,4 +9,6 @@ from src.executors import (
     api_call_executor,
     script_runner_executor,
     sleep_executor,
+    cli_agent_executor,
+    git_commit_executor,
 )

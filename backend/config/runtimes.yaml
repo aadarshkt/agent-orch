@@ -1,0 +1,23 @@
+# Preconfigured runtime presets. Each CLI agent references one of these by name.
+# image  -> pulled from the registry (credentials via backend/.env)
+# command-> default command; the prompt is appended by the executor
+runtimes:
+  - name: claude-cli
+    kind: cli
+    image: ghcr.io/eco/claude-agent:latest
+    command: ["claude", "-p"]
+    env: {}
+    resource_limits:
+      cpus: "1.0"
+      memory: "512m"
+    timeout: 300
+
+  - name: python-agent
+    kind: cli
+    image: ghcr.io/eco/python-agent:latest
+    command: ["python", "-m", "eco_agent"]
+    env: {}
+    resource_limits:
+      cpus: "1.0"
+      memory: "512m"
+    timeout: 300

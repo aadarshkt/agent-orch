@@ -13,6 +13,22 @@ from src.registry.executor_registry import register_executor
 class SleepExecutor(BaseExecutor):
     """Simple delay executor (for testing/demo purposes)."""
 
+    runtime_kind = "none"
+    display_name = "Sleep / Delay"
+    icon = "clock"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "duration": {
+                "type": "number",
+                "default": 1,
+                "title": "Duration (seconds)",
+                "description": "How long to sleep",
+            },
+        },
+        "required": ["duration"],
+    }
+
     async def execute(
         self,
         node_config: Dict[str, Any],

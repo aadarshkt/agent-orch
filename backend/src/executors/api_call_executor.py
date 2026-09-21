@@ -14,6 +14,40 @@ from src.registry.executor_registry import register_executor
 class APICallExecutor(BaseExecutor):
     """Makes an arbitrary HTTP request with configurable method, URL, headers, body."""
 
+    runtime_kind = "none"
+    display_name = "API Call"
+    icon = "globe"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "method": {
+                "type": "string",
+                "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+                "default": "GET",
+                "title": "HTTP Method",
+            },
+            "url": {
+                "type": "string",
+                "format": "uri",
+                "title": "URL",
+                "description": "The endpoint URL to call",
+            },
+            "headers": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "title": "Headers",
+                "description": "HTTP headers as key-value pairs",
+            },
+            "body_template": {
+                "type": "string",
+                "title": "Body Template",
+                "description": "Request body (supports {{state.variable}} placeholders)",
+                "ui:widget": "textarea",
+            },
+        },
+        "required": ["url"],
+    }
+
     async def execute(
         self,
         node_config: Dict[str, Any],

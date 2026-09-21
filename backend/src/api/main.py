@@ -1,10 +1,14 @@
+import os
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from src.db.session import init_db
 from src.engine.checkpointer import init_checkpointer, close_checkpointer
-from src.api.routes import workflows, mcp, events, node_types, agents
+from src.api.routes import workflows, mcp, events, node_types, agents, runtimes
 from src.registry.seed_node_types import seed_node_types
+from src.config.parser import load_runtimes
+from src.registry.runtime_registry import register_runtimes
 
 # Ensure executors are registered on import
 import src.executors  # noqa: F401
@@ -23,7 +27,16 @@ async def lifespan(app: FastAPI):
         seed_node_types()
     except Exception as e:
         print(f"Node type seeding failed: {e}")
-    
+
+    # Load runtime presets from YAML
+    try:
+        config_dir = Path(__file__).resolve().parent.parent.parent / "config"
+        runtimes_path = os.getenv("RUNTIMES_CONFIG", str(config_dir / "runtimes.yaml"))
+        register_runtimes(load_runtimes(runtimes_path))
+        print(f"Loaded runtimes from {runtimes_path}")
+    except Exception as e:
+        print(f"Runtime loading failed: {e}")
+
     init_checkpointer(app)
     
     yield
@@ -50,5 +63,6 @@ app.add_middleware(
 app.include_router(node_types.router, prefix="/node-types", tags=["Node Types"])
 app.include_router(agents.router, prefix="/agents", tags=["Agents"])
 app.include_router(workflows.router, prefix="/workflows", tags=["Workflows"])
+app.include_router(runtimes.router, prefix="/runtimes", tags=["Runtimes"])
 app.include_router(mcp.router, prefix="/mcp-registry", tags=["MCP Registry"])
 app.include_router(events.router, prefix="/events", tags=["Events"])
