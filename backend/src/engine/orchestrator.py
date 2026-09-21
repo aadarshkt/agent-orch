@@ -69,6 +69,59 @@ def make_node_func(
     return node_func
 
 
+def evaluate_condition(condition: str, state: WorkflowState) -> bool:
+    """
+    Evaluates an edge condition against the current workflow state.
+    Supports:
+      - Empty / None: Always True
+      - 'success' / 'completed' / 'ok': Step completed without error
+      - 'failure' / 'failed' / 'error': Step failed or has an error
+      - 'approved': Step was approved
+      - 'rejected': Step was rejected
+      - Boolean / Python expressions: Evaluated with state variables in scope
+    """
+    if not condition or not condition.strip():
+        return True
+
+    cond = condition.strip()
+    cond_lower = cond.lower()
+
+    if cond_lower in ("success", "completed", "ok"):
+        return state.get("status") in ("completed", "success", "ok") and not state.get("error")
+    if cond_lower in ("failure", "failed", "error"):
+        return state.get("status") in ("failed", "error", "failure") or bool(state.get("error"))
+    if cond_lower == "approved":
+        return state.get("approval_status") == "approved"
+    if cond_lower == "rejected":
+        return state.get("approval_status") == "rejected"
+
+    # Expression evaluation in safe environment
+    safe_globals = {"__builtins__": {}}
+    safe_locals = {
+        "status": state.get("status"),
+        "error": state.get("error"),
+        "approval_status": state.get("approval_status"),
+        "current_step": state.get("current_step"),
+        "artifacts": state.get("artifacts") or {},
+        "messages": state.get("messages") or [],
+        "state": state,
+        "True": True,
+        "False": False,
+        "None": None,
+        "len": len,
+        "str": str,
+        "int": int,
+        "float": float,
+        "bool": bool,
+    }
+    try:
+        res = eval(cond, safe_globals, safe_locals)
+        return bool(res)
+    except Exception as e:
+        print(f"Condition evaluation warning for '{cond}': {e}")
+        return False
+
+
 def compile_workflow(
     config: WorkflowConfig,
     agents_map: Dict[str, dict],
@@ -111,21 +164,31 @@ def compile_workflow(
         if config.hitl_enabled and node.requires_approval:
             interrupt_before.append(node.id)
 
-    # 3. Edge injection
+    # 3. Edge injection: group edges by source node to support conditional branching and fallback
+    edges_by_source: Dict[str, list] = {}
     for edge in config.edges:
-        if edge.condition:
-            def make_router(to_node):
+        edges_by_source.setdefault(edge.from_node, []).append(edge)
+
+    for from_node, edge_list in edges_by_source.items():
+        has_condition = any(bool(e.condition and e.condition.strip()) for e in edge_list)
+        if not has_condition and len(edge_list) == 1:
+            graph.add_edge(from_node, edge_list[0].to_node)
+        else:
+            def make_router(out_edges):
                 def route(state: WorkflowState):
-                    return to_node
+                    for e in out_edges:
+                        if not e.condition or evaluate_condition(e.condition, state):
+                            return e.to_node
+                    return END
                 return route
 
+            path_map = {e.to_node: e.to_node for e in edge_list}
+            path_map[END] = END
             graph.add_conditional_edges(
-                edge.from_node,
-                make_router(edge.to_node),
-                {edge.to_node: edge.to_node},
+                from_node,
+                make_router(edge_list),
+                path_map,
             )
-        else:
-            graph.add_edge(edge.from_node, edge.to_node)
 
     # Connect start and end nodes
     incoming_edges = {edge.to_node for edge in config.edges}

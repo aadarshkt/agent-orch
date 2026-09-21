@@ -728,24 +728,140 @@ a { color: inherit; text-decoration: none; }
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0.35rem 0;
+  padding: 0.5rem 0;
+  position: relative;
 }
 .workflow-edge-line {
   width: 2px;
-  height: 16px;
+  height: 20px;
   background: linear-gradient(to bottom, var(--border), var(--accent), var(--border));
   margin: 0 0.75rem;
 }
 .workflow-edge-condition {
+  position: relative;
   flex-shrink: 0;
 }
-.workflow-edge-condition .form-input {
-  width: 180px;
-  text-align: center;
+.workflow-edge-condition-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.75rem;
   font-size: 0.78rem;
-  padding: 0.25rem 0.5rem;
+  font-weight: 600;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
   background: var(--surface-elevated);
+  color: var(--foreground);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
+.workflow-edge-condition-btn:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+  transform: translateY(-1px);
+}
+.workflow-edge-condition-btn .cond-icon {
+  font-size: 0.85rem;
+}
+.workflow-edge-condition-btn .cond-chevron {
+  font-size: 0.65rem;
+  opacity: 0.7;
+}
+
+/* Condition type badges */
+.workflow-edge-condition-btn.cond-always {
+  border-color: var(--border);
+  color: var(--muted);
+}
+.workflow-edge-condition-btn.cond-success {
+  border-color: rgba(16, 185, 129, 0.5);
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+}
+.workflow-edge-condition-btn.cond-failed {
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+.workflow-edge-condition-btn.cond-approved {
+  border-color: rgba(245, 158, 11, 0.5);
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+}
+.workflow-edge-condition-btn.cond-custom {
+  border-color: rgba(59, 130, 246, 0.5);
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+}
+
+/* Condition Popover Menu */
+.workflow-cond-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 290px;
+  padding: 0.75rem;
+  border-radius: var(--radius-md);
+  background: #181926;
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5), 0 0 15px var(--accent-glow);
+  z-index: 100;
+  backdrop-filter: blur(12px);
+  animation: fadeIn 0.15s ease-out;
+}
+.workflow-cond-popover-header {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.workflow-cond-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.workflow-cond-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+  font-size: 0.8rem;
+  color: var(--foreground);
+}
+.workflow-cond-option:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border);
+}
+.workflow-cond-option.active {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: var(--accent);
+  color: #818cf8;
+}
+.workflow-cond-custom-input {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.workflow-cond-custom-input .form-input {
+  font-size: 0.78rem;
+  padding: 0.35rem 0.55rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
 
 /* ─── Dashboard: Workflow List ─── */
 .workflow-list-grid {

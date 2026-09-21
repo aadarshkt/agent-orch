@@ -2,8 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-
-const API_BASE = 'http://localhost:8000';
+import { API_BASE } from '@/lib/api';
 
 interface Agent {
   id: string;
@@ -53,6 +52,7 @@ export default function NewWorkflowPage() {
   const [hitlEnabled, setHitlEnabled] = useState(false);
   const [nodes, setNodes] = useState<WorkflowNode[]>([]);
   const [edges, setEdges] = useState<WorkflowEdge[]>([]);
+  const [openConditionIdx, setOpenConditionIdx] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -61,22 +61,47 @@ export default function NewWorkflowPage() {
     fetchData();
   }, []);
 
-  // Auto-generate sequential edges when nodes change
+  // Auto-generate sequential edges when nodes change, preserving existing conditions
   useEffect(() => {
     if (nodes.length < 2) {
       setEdges([]);
       return;
     }
-    const autoEdges: WorkflowEdge[] = [];
-    for (let i = 0; i < nodes.length - 1; i++) {
-      autoEdges.push({
-        from_node: nodes[i].id,
-        to_node: nodes[i + 1].id,
-        condition: null,
-      });
-    }
-    setEdges(autoEdges);
+    setEdges((prevEdges) => {
+      const prevMap = new Map<string, string | null>();
+      for (const e of prevEdges) {
+        prevMap.set(`${e.from_node}->${e.to_node}`, e.condition);
+      }
+      const autoEdges: WorkflowEdge[] = [];
+      for (let i = 0; i < nodes.length - 1; i++) {
+        const key = `${nodes[i].id}->${nodes[i + 1].id}`;
+        const existingCond = prevMap.has(key) ? prevMap.get(key)! : (prevEdges[i]?.condition || null);
+        autoEdges.push({
+          from_node: nodes[i].id,
+          to_node: nodes[i + 1].id,
+          condition: existingCond,
+        });
+      }
+      return autoEdges;
+    });
   }, [nodes]);
+
+  function getConditionInfo(condition: string | null) {
+    if (!condition || !condition.trim()) {
+      return { type: 'always', label: 'Always', icon: '⚡', className: 'cond-always' };
+    }
+    const cond = condition.trim().toLowerCase();
+    if (cond === 'success' || cond === 'completed') {
+      return { type: 'success', label: 'On Success', icon: '✓', className: 'cond-success' };
+    }
+    if (cond === 'failed' || cond === 'failure' || cond === 'error') {
+      return { type: 'failed', label: 'On Failure', icon: '✗', className: 'cond-failed' };
+    }
+    if (cond === 'approved') {
+      return { type: 'approved', label: 'When Approved', icon: '🛡', className: 'cond-approved' };
+    }
+    return { type: 'custom', label: condition, icon: '⚙', className: 'cond-custom' };
+  }
 
   async function fetchData() {
     setLoading(true);
@@ -367,21 +392,106 @@ export default function NewWorkflowPage() {
                       </div>
 
                       {/* Edge connector (if not last node) */}
-                      {idx < nodes.length - 1 && edge && (
-                        <div className="workflow-edge-connector">
-                          <div className="workflow-edge-line" />
-                          <div className="workflow-edge-condition">
-                            <input
-                              type="text"
-                              className="form-input form-input-sm"
-                              value={edge.condition || ''}
-                              onChange={(e) => updateEdgeCondition(idx, e.target.value)}
-                              placeholder="condition (optional)"
-                            />
+                      {idx < nodes.length - 1 && edge && (() => {
+                        const condInfo = getConditionInfo(edge.condition);
+                        const isOpen = openConditionIdx === idx;
+                        return (
+                          <div className="workflow-edge-connector">
+                            <div className="workflow-edge-line" />
+                            <div className="workflow-edge-condition">
+                              <button
+                                type="button"
+                                className={`workflow-edge-condition-btn ${condInfo.className}`}
+                                onClick={() => setOpenConditionIdx(isOpen ? null : idx)}
+                                title="Click to choose transition condition"
+                              >
+                                <span className="cond-icon">{condInfo.icon}</span>
+                                <span>{condInfo.label}</span>
+                                <span className="cond-chevron">{isOpen ? '▲' : '▼'}</span>
+                              </button>
+
+                              {isOpen && (
+                                <div className="workflow-cond-popover">
+                                  <div className="workflow-cond-popover-header">
+                                    <span>Transition Condition</span>
+                                    <button
+                                      type="button"
+                                      className="btn-icon"
+                                      style={{ width: '18px', height: '18px', fontSize: '10px' }}
+                                      onClick={() => setOpenConditionIdx(null)}
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                  <div className="workflow-cond-options">
+                                    <button
+                                      type="button"
+                                      className={`workflow-cond-option ${condInfo.type === 'always' ? 'active' : ''}`}
+                                      onClick={() => {
+                                        updateEdgeCondition(idx, '');
+                                        setOpenConditionIdx(null);
+                                      }}
+                                    >
+                                      <span>⚡ Always (Normal Flow)</span>
+                                      {condInfo.type === 'always' && <span>✓</span>}
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      className={`workflow-cond-option ${condInfo.type === 'success' ? 'active' : ''}`}
+                                      onClick={() => {
+                                        updateEdgeCondition(idx, 'success');
+                                        setOpenConditionIdx(null);
+                                      }}
+                                    >
+                                      <span>✓ On Success</span>
+                                      {condInfo.type === 'success' && <span>✓</span>}
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      className={`workflow-cond-option ${condInfo.type === 'failed' ? 'active' : ''}`}
+                                      onClick={() => {
+                                        updateEdgeCondition(idx, 'failed');
+                                        setOpenConditionIdx(null);
+                                      }}
+                                    >
+                                      <span>✗ On Failure</span>
+                                      {condInfo.type === 'failed' && <span>✓</span>}
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      className={`workflow-cond-option ${condInfo.type === 'approved' ? 'active' : ''}`}
+                                      onClick={() => {
+                                        updateEdgeCondition(idx, 'approved');
+                                        setOpenConditionIdx(null);
+                                      }}
+                                    >
+                                      <span>🛡 When Approved</span>
+                                      {condInfo.type === 'approved' && <span>✓</span>}
+                                    </button>
+                                  </div>
+
+                                  <div className="workflow-cond-custom-input">
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginBottom: '0.35rem' }}>
+                                      Or custom condition:
+                                    </div>
+                                    <input
+                                      type="text"
+                                      className="form-input form-input-sm"
+                                      value={edge.condition || ''}
+                                      onChange={(e) => updateEdgeCondition(idx, e.target.value)}
+                                      placeholder="e.g. status == 'completed'"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            <div className="workflow-edge-line" />
                           </div>
-                          <div className="workflow-edge-line" />
-                        </div>
-                      )}
+                        );
+                      })()}
                     </div>
                   );
                 })}

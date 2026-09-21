@@ -2,8 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import DynamicForm from './components/DynamicForm';
-
-const API_BASE = 'http://localhost:8000';
+import { API_BASE } from '@/lib/api';
 
 interface NodeType {
   id: string;

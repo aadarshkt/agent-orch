@@ -14,7 +14,7 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 
 from src.db.session import get_db
-from src.db.models import WorkflowModel, AgentModel, NodeTypeModel
+from src.db.models import WorkflowModel, AgentModel, NodeTypeModel, WorkflowExecutionModel
 from src.config.schema import WorkflowConfig, NodeConfig, EdgeConfig
 from src.engine.orchestrator import compile_workflow
 from src.engine.pubsub import event_bus
@@ -262,6 +262,40 @@ def _resolve_workflow(workflow_id: str, db: Session):
     return config, agents_map, node_types_map
 
 
+def _update_execution_status(
+    thread_id: str,
+    status: Optional[str] = None,
+    current_step: Optional[str] = None,
+    error: Optional[str] = None,
+    completed: bool = False,
+):
+    """Helper to update WorkflowExecutionModel status and step in DB."""
+    from src.db.session import SessionLocal
+
+    db_session = SessionLocal()
+    try:
+        rec = (
+            db_session.query(WorkflowExecutionModel)
+            .filter(WorkflowExecutionModel.thread_id == thread_id)
+            .first()
+        )
+        if rec:
+            if status is not None:
+                rec.status = status
+            if current_step is not None:
+                rec.current_step = current_step
+            if error is not None:
+                rec.error = error
+            if completed:
+                rec.completed_at = datetime.utcnow()
+            rec.updated_at = datetime.utcnow()
+            db_session.commit()
+    except Exception as err:
+        print(f"Failed to update execution {thread_id}: {err}")
+    finally:
+        db_session.close()
+
+
 def run_workflow_sync(
     thread_id: str,
     workflow_id: str,
@@ -276,6 +310,7 @@ def run_workflow_sync(
     try:
         config, agents_map, node_types_map = _resolve_workflow(workflow_id, db)
     except HTTPException as e:
+        _update_execution_status(thread_id, status="failed", error=str(e.detail), completed=True)
         event_bus.publish_sync(
             thread_id, {"event": "error", "data": e.detail}, loop=loop
         )
@@ -303,12 +338,19 @@ def run_workflow_sync(
                 "artifacts": {},
                 "approval_status": "pending",
             }
+            _update_execution_status(thread_id, status="running", current_step="start")
             event_bus.publish_sync(
                 thread_id,
                 {"event": "start", "data": f"Initializing workflow '{config.name}'..."},
                 loop=loop,
             )
         else:
+            _update_execution_status(thread_id, status="running")
+            # Update state in checkpointer to approve paused node
+            try:
+                graph.update_state(config_dict, {"approval_status": "approved"})
+            except Exception as e:
+                print(f"Note on state update: {e}")
             event_bus.publish_sync(
                 thread_id,
                 {"event": "resume", "data": "Workflow resumed. Executing approved node..."},
@@ -319,6 +361,9 @@ def run_workflow_sync(
 
         for event in graph.stream(stream_input, config_dict):
             step_name = list(event.keys())[0] if event else "unknown"
+            if step_name == "__interrupt__":
+                continue
+            _update_execution_status(thread_id, current_step=step_name)
             event_bus.publish_sync(
                 thread_id,
                 {"event": "agent", "data": f"Completed step: {step_name}"},
@@ -327,12 +372,15 @@ def run_workflow_sync(
 
         state = graph.get_state(config_dict)
         if state.next:
+            next_step = state.next[0] if isinstance(state.next, (list, tuple)) else str(state.next)
+            _update_execution_status(thread_id, status="paused", current_step=next_step)
             event_bus.publish_sync(
                 thread_id,
                 {"event": "review", "data": f"Waiting for human approval at: {state.next}"},
                 loop=loop,
             )
         else:
+            _update_execution_status(thread_id, status="completed", completed=True)
             event_bus.publish_sync(
                 thread_id,
                 {"event": "complete", "data": "Workflow finished."},
@@ -340,6 +388,7 @@ def run_workflow_sync(
             )
 
     except Exception as e:
+        _update_execution_status(thread_id, status="failed", error=str(e), completed=True)
         event_bus.publish_sync(
             thread_id, {"event": "error", "data": str(e)}, loop=loop
         )
@@ -359,6 +408,18 @@ async def execute_workflow(
         raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found.")
 
     thread_id = str(uuid.uuid4())
+    execution = WorkflowExecutionModel(
+        id=str(uuid.uuid4()),
+        thread_id=thread_id,
+        workflow_id=workflow_id,
+        status="running",
+        current_step="start",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(execution)
+    db.commit()
+
     checkpointer = request.app.state.checkpointer
     loop = asyncio.get_running_loop()
 
@@ -374,29 +435,107 @@ async def resume_workflow(
     thread_id: str,
     request: Request,
     background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
 ):
     """Resume a paused workflow (after human approval)."""
-    # For resume, we need the workflow_id. We'll retrieve it from the checkpointer state.
-    # For now, accept workflow_id as a query param.
+    execution = (
+        db.query(WorkflowExecutionModel)
+        .filter(WorkflowExecutionModel.thread_id == thread_id)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Execution for thread '{thread_id}' not found.",
+        )
+
+    if execution.status not in ("paused", "running"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resume execution in status '{execution.status}'. Must be 'paused'.",
+        )
+
+    execution.status = "running"
+    execution.updated_at = datetime.utcnow()
+    db.commit()
+
     checkpointer = request.app.state.checkpointer
     loop = asyncio.get_running_loop()
 
-    # Note: In a full implementation, we'd store the workflow_id alongside the thread_id.
-    # For now, this is a simplified resume that re-uses the compiled graph.
     event_bus.publish_sync(
         thread_id,
-        {"event": "resume", "data": "Workflow resumed by user."},
+        {"event": "resume", "data": "Workflow resumed by user. Executing next step..."},
         loop=loop,
     )
 
-    return {"status": "resumed", "thread_id": thread_id}
+    background_tasks.add_task(
+        run_workflow_sync,
+        thread_id,
+        execution.workflow_id,
+        checkpointer,
+        loop,
+        is_resume=True,
+    )
+
+    return {
+        "status": "resumed",
+        "thread_id": thread_id,
+        "workflow_id": execution.workflow_id,
+    }
 
 
 @router.get("/{thread_id}/status")
-async def get_workflow_status(thread_id: str, request: Request):
+async def get_workflow_status(
+    thread_id: str,
+    db: Session = Depends(get_db),
+):
     """Get the current execution status of a workflow run."""
+    execution = (
+        db.query(WorkflowExecutionModel)
+        .filter(WorkflowExecutionModel.thread_id == thread_id)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Execution for thread '{thread_id}' not found.",
+        )
+
     return {
-        "thread_id": thread_id,
-        "status": "unknown",
-        "note": "Status tracking requires thread_id → workflow_id mapping (future enhancement).",
+        "thread_id": execution.thread_id,
+        "workflow_id": execution.workflow_id,
+        "status": execution.status,
+        "current_step": execution.current_step,
+        "error": execution.error,
+        "created_at": execution.created_at.isoformat() if execution.created_at else None,
+        "updated_at": execution.updated_at.isoformat() if execution.updated_at else None,
+        "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
     }
+
+
+@router.get("/{workflow_id}/executions")
+def list_workflow_executions(
+    workflow_id: str,
+    db: Session = Depends(get_db),
+):
+    """List all execution runs for a specific workflow."""
+    executions = (
+        db.query(WorkflowExecutionModel)
+        .filter(WorkflowExecutionModel.workflow_id == workflow_id)
+        .order_by(WorkflowExecutionModel.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "thread_id": ex.thread_id,
+            "workflow_id": ex.workflow_id,
+            "status": ex.status,
+            "current_step": ex.current_step,
+            "error": ex.error,
+            "created_at": ex.created_at.isoformat() if ex.created_at else None,
+            "updated_at": ex.updated_at.isoformat() if ex.updated_at else None,
+            "completed_at": ex.completed_at.isoformat() if ex.completed_at else None,
+        }
+        for ex in executions
+    ]
+

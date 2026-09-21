@@ -65,3 +65,21 @@ class MCPServerRegistration(Base):
     args = Column(JSON, nullable=True)             # for stdio
     url = Column(String, nullable=True)            # for sse
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WorkflowExecutionModel(Base):
+    """
+    Tracks individual execution runs of workflows.
+    Maps thread_id to workflow_id and maintains execution status and step history.
+    """
+    __tablename__ = "workflow_executions"
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    thread_id = Column(String, unique=True, index=True, nullable=False)
+    workflow_id = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="running")  # running, paused, completed, failed
+    current_step = Column(String, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+

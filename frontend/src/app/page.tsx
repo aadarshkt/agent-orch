@@ -1,8 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-
-const API_BASE = 'http://localhost:8000';
+import { API_BASE } from '@/lib/api';
 
 interface Workflow {
   id: string;
@@ -76,6 +75,9 @@ export default function Dashboard() {
         const parsed = JSON.parse(e.data);
         if (parsed.event === 'ping') return;
         setEvents((prev) => [...prev, parsed]);
+        if (parsed.event === 'complete' || parsed.event === 'error') {
+          setExecutingId(null);
+        }
       };
       es.onerror = () => {
         console.error('SSE stream error');
@@ -91,9 +93,14 @@ export default function Dashboard() {
     if (!threadId) return;
     setIsResuming(true);
     try {
-      await fetch(`${API_BASE}/workflows/${threadId}/resume`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/workflows/${threadId}/resume`, { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.detail || 'Failed to resume workflow');
+      }
       setIsResuming(false);
-    } catch {
+    } catch (e: any) {
+      setError(e.message);
       setIsResuming(false);
     }
   }
