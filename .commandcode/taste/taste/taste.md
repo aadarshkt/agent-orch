@@ -11,7 +11,13 @@
 - Prefers explicit, ordered/phased task lists that break remaining work into a clear sequence rather than a flat or unprioritized set. Confidence: 0.7
 - Prefers happy-path-first scaffolding: defer validation and hardening (use placeholder/stub entries for now) until the core flow works. Confidence: 0.7
 - Treats Docker image packaging (build/push of a CLI binary + runtime + packages) as part of CLI agent onboarding, not just defining runtime presets. Confidence: 0.6
- Prefers the assistant to proactively generate additional open design questions/edge cases ("create more such questions") rather than only answering the question asked. Confidence: 0.7
-- Prefers implementation work to be done on a separate feature branch that is merged into master/main later, rather than committing changes directly to the main branch. Confidence: 0.85
+ Prefers the assistant to proactively generate additional open design questions/edge cases ("create more such questions") rather than only answering the question asked. Confidence: 0.8
+- Prefers implementation work to be done on a separate feature branch that is merged into master/main later, rather than committing changes directly to the main branch. Confidence: 0.9
+- Prefers kebab-case, feature-descriptive branch names (e.g. job-seeker-workflow). Confidence: 0.6
 - Prefers batching remaining work: complete all outstanding phases/tasks and commit them in one go, rather than stopping for incremental check-ins or confirmations between phases. Confidence: 0.8
 - Prefers comprehensive, forward-looking example configs that include not-yet-implemented components (clearly annotated as pending/stub) rather than omitting them, so the full target workflow is visible in one place. Confidence: 0.6
+- Wants explanations of how a system runs to include an explicit inventory of dependencies and external requirements (language/runtime versions, Docker, Postgres, git, registry images), not just high-level setup steps. Confidence: 0.7
+- Values an explicit extensibility assessment when reviewing an implementation or design — what can be extended via data/config vs. requiring code, and the current limitations. Confidence: 0.7
+- Builds for human productivity and ease-of-use: wants features to make desired outcomes (e.g., getting a job) easy, personalized to a user's current skills, and explicitly prioritizes underserved/entry-level users (e.g., junior devs). Confidence: 0.7
+- Prefers feature/product ideation grounded in current external research (e.g., web search) plus the existing codebase, rather than off-the-cuff brainstorming. Confidence: 0.6
+- Prefers building workflows as a two-sided marketplace that serves both the seeker and the provider of a need (e.g., job seekers and hiring managers), anchored on helping "people in need of something." Confidence: 0.7

@@ -1,0 +1,80 @@
+# Self-contained workflow: a job seeker gets matched to roles and applies.
+# Import via POST /workflows/import with yaml_path=config/job_seeker_workflow.yaml
+version: 1
+
+runtimes:
+  - name: claude-cli
+    kind: cli
+    image: ghcr.io/eco/claude-agent:latest
+    command: ["claude", "-p"]
+    env: {}
+    resource_limits:
+      cpus: "1.0"
+      memory: "512m"
+    timeout: 300
+
+  - name: cloud-review
+    kind: cloud
+    endpoint: https://agent.eco.dev/review
+    model: gemini-pro
+    env: {}
+
+agents:
+  profile_analyzer:
+    type: cloud_agent
+    runtime: cloud-review
+    inputs:
+      system_prompt: "Extract the candidate's skills, experience level, and desired role or domain from the resume in the provided repository."
+      gitlab_urls:
+        - "https://gitlab.eco/candidates/resume.git"
+      model: gemini-pro
+
+  role_matcher:
+    type: cloud_agent
+    runtime: cloud-review
+    inputs:
+      system_prompt: "Match the candidate's extracted skills to open roles and domains, rank them by fit, and recommend the single best target role."
+      gitlab_urls:
+        - "https://gitlab.eco/candidates/resume.git"
+      model: gemini-pro
+
+  resume_tailor:
+    type: cli_agent
+    runtime: claude-cli
+    inputs:
+      repo_urls:
+        - "https://gitlab.eco/candidates/resume.git"
+      branch: "main"
+      prompt: "Tailor the resume in /workspace to the top-matched role from the previous step. Emphasize matching skills and ATS keywords."
+      timeout: 300
+
+  final_review:
+    type: reviewer
+    inputs:
+      review_prompt: "Review the tailored resume for ATS keyword coverage, accuracy, and clarity. Flag anything that misrepresents the candidate."
+      output_target: user
+
+  apply:
+    type: api_call
+    inputs:
+      method: POST
+      url: "https://jobs.example.com/api/applications"
+      headers:
+        Content-Type: "application/json"
+      body_template: '{"candidate_id": "{{state.candidate_id}}", "role": "{{state.matched_role}}"}'
+
+workflow:
+  name: "Job Seeker Pipeline"
+  description: "Analyze skills, match roles, tailor resume, get human review, then apply."
+  hitl_enabled: true
+  nodes:
+    - { id: analyze, agent: profile_analyzer, requires_approval: false }
+    - { id: match, agent: role_matcher, requires_approval: false }
+    - { id: tailor, agent: resume_tailor, requires_approval: false }
+    - { id: review, agent: final_review, requires_approval: true }
+    - { id: apply, agent: apply, requires_approval: false }
+  edges:
+    - { from: analyze, to: match, condition: success }
+    - { from: match, to: tailor, condition: success }
+    - { from: tailor, to: review, condition: success }
+    - { from: review, to: apply, condition: approved }

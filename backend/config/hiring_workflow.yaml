@@ -1,0 +1,68 @@
+# Self-contained workflow: a hiring manager turns a job description into a
+# reviewed shortlist and sends outreach.
+# Import via POST /workflows/import with yaml_path=config/hiring_workflow.yaml
+version: 1
+
+runtimes:
+  - name: cloud-review
+    kind: cloud
+    endpoint: https://agent.eco.dev/review
+    model: gemini-pro
+    env: {}
+
+agents:
+  jd_parser:
+    type: cloud_agent
+    runtime: cloud-review
+    inputs:
+      system_prompt: "Parse the job description in the provided repository and extract the required skills, experience level, and responsibilities."
+      gitlab_urls:
+        - "https://gitlab.eco/hiring/job-descriptions.git"
+      model: gemini-pro
+
+  candidate_finder:
+    type: mcp_agent
+    inputs:
+      system_prompt: "Search the candidate pool for profiles matching the required skills and experience level."
+      mcp_server_name: jobs_board
+      action: search_candidates
+
+  shortlist_ranker:
+    type: cloud_agent
+    runtime: cloud-review
+    inputs:
+      system_prompt: "Rank the matched candidates by skill fit and readiness, and produce an ordered shortlist with a rationale for each."
+      gitlab_urls:
+        - "https://gitlab.eco/hiring/job-descriptions.git"
+      model: gemini-pro
+
+  shortlist_review:
+    type: reviewer
+    inputs:
+      review_prompt: "Review the candidate shortlist for relevance and diversity. Approve or request changes before outreach."
+      output_target: user
+
+  outreach:
+    type: api_call
+    inputs:
+      method: POST
+      url: "https://jobs.example.com/api/outreach"
+      headers:
+        Content-Type: "application/json"
+      body_template: '{"candidate_email": "{{state.candidate_email}}", "template": "interview_invite"}'
+
+workflow:
+  name: "Hiring Pipeline"
+  description: "Parse job description, find and rank candidates, get human review, then send outreach."
+  hitl_enabled: true
+  nodes:
+    - { id: parse_jd, agent: jd_parser, requires_approval: false }
+    - { id: find, agent: candidate_finder, requires_approval: false }
+    - { id: rank, agent: shortlist_ranker, requires_approval: false }
+    - { id: review, agent: shortlist_review, requires_approval: true }
+    - { id: outreach, agent: outreach, requires_approval: false }
+  edges:
+    - { from: parse_jd, to: find, condition: success }
+    - { from: find, to: rank, condition: success }
+    - { from: rank, to: review, condition: success }
+    - { from: review, to: outreach, condition: approved }
