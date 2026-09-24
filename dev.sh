@@ -47,6 +47,19 @@ PG_DB="postgres"
 BACKEND_PORT="${BACKEND_PORT:-8010}"
 FRONTEND_PORT="${FRONTEND_PORT:-3001}"
 
+stop_existing_services() {
+  log "Stopping processes using ports ${BACKEND_PORT} and ${FRONTEND_PORT}…"
+
+  for port in "$BACKEND_PORT" "$FRONTEND_PORT"; do
+    local pids
+    pids=$(lsof -ti :"$port" 2>/dev/null || true)
+    if [[ -n "$pids" ]]; then
+      kill -9 $pids 2>/dev/null || true
+      ok "Stopped process(es) using port $port."
+    fi
+  done
+}
+
 
 # ─── Cleanup on exit ──────────────────────────────────────────────────────────
 BACKEND_PID=""
@@ -215,7 +228,7 @@ start_frontend() {
   log "Starting Next.js frontend on http://localhost:${FRONTEND_PORT} …"
   cd "$FRONTEND_DIR"
 
-  PORT="$FRONTEND_PORT" NEXT_PUBLIC_API_BASE="http://localhost:${BACKEND_PORT}" npm run dev -- -p "$FRONTEND_PORT" &
+  PORT="$FRONTEND_PORT" NEXT_PUBLIC_API_BASE="http://localhost:${BACKEND_PORT}" npm run dev -- --webpack -p "$FRONTEND_PORT" &
   FRONTEND_PID=$!
 
   ok "Frontend started (PID $FRONTEND_PID)."
@@ -231,6 +244,7 @@ main() {
   echo -e "${BOLD}╚══════════════════════════════════════╝${NC}"
   echo ""
 
+  stop_existing_services
   start_postgres
   wait_for_postgres
   setup_python

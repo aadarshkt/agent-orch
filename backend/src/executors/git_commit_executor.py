@@ -6,8 +6,9 @@ Commit logic is intentionally hardcoded (default message, add-all). The
 executor reads the workspace path from the upstream node's artifacts.
 """
 import asyncio
+import os
 import subprocess
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from src.registry.base_executor import BaseExecutor, ExecutionContext
 from src.registry.executor_registry import register_executor
@@ -39,6 +40,12 @@ class GitCommitExecutor(BaseExecutor):
                 "title": "Commit message",
                 "description": "Defaults to a generated message if empty",
             },
+            "repo_path": {
+                "type": "string",
+                "title": "Repo path",
+                "description": "Git repo within the workspace to commit (e.g. 'repos/0'). "
+                               "Defaults to the workspace root, or the only repo under repos/.",
+            },
         },
         "required": ["source_node_id"],
     }
@@ -56,6 +63,7 @@ class GitCommitExecutor(BaseExecutor):
         source_node_id = params.get("source_node_id")
         branch = params.get("branch", "main")
         message = params.get("commit_message", f"chore: update from {agent_name}")
+        repo_path = params.get("repo_path")
 
         artifacts = dict(state.get("artifacts", {}))
         workspace = artifacts.get(f"{source_node_id}_workspace")
@@ -64,9 +72,19 @@ class GitCommitExecutor(BaseExecutor):
             await self._emit(context, f"[{agent_name}] {error}")
             return {**state, "status": "failed", "error": error, "current_step": node_id}
 
-        await self._emit(context, f"[{agent_name}] Committing workspace {workspace}...")
+        repo = self._resolve_repo(workspace, repo_path)
+        if not repo:
+            error = (
+                f"No git repository found in workspace for node '{source_node_id}'"
+                + (f" at '{repo_path}'" if repo_path else "")
+                + ". Set 'repo_path' to choose one."
+            )
+            await self._emit(context, f"[{agent_name}] {error}")
+            return {**state, "status": "failed", "error": error, "current_step": node_id}
 
-        result = await asyncio.to_thread(self._commit, workspace, branch, message)
+        await self._emit(context, f"[{agent_name}] Committing repo {repo}...")
+
+        result = await asyncio.to_thread(self._commit, repo, branch, message)
 
         new_artifacts = dict(state.get("artifacts", {}))
         new_artifacts[f"{node_id}_commit"] = result
@@ -82,6 +100,26 @@ class GitCommitExecutor(BaseExecutor):
             "status": "completed",
             "error": None,
         }
+
+    def _resolve_repo(self, workspace: str, repo_path: Optional[str]) -> Optional[str]:
+        """Resolve which git repo inside the workspace to commit."""
+        if repo_path:
+            candidate = os.path.join(workspace, repo_path)
+            return candidate if os.path.isdir(os.path.join(candidate, ".git")) else None
+
+        if os.path.isdir(os.path.join(workspace, ".git")):
+            return workspace
+
+        repos_dir = os.path.join(workspace, "repos")
+        if os.path.isdir(repos_dir):
+            candidates = sorted(
+                os.path.join(repos_dir, d)
+                for d in os.listdir(repos_dir)
+                if os.path.isdir(os.path.join(repos_dir, d, ".git"))
+            )
+            if len(candidates) == 1:
+                return candidates[0]
+        return None
 
     def _commit(self, workspace: str, branch: str, message: str) -> str:
         def run(*args: str) -> str:

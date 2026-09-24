@@ -24,12 +24,17 @@ agents:
       prompt_url: "https://gitlab.eco/eco/skills/-/raw/main/prompt.md"
       skill_urls:
         - "https://gitlab.eco/eco/skills/-/raw/main/review.md"
+      # Read-only context: single files from any repo, fetched into context/.
+      context_files:
+        - "https://gitlab.eco/eco/docs/-/raw/main/architecture.md"
+        - "https://gitlab.eco/eco/standards/-/raw/main/coding_style.md"
 
   committer:
     type: git_commit
     inputs:
       source_node_id: coding
       branch: "feature/ecocharge"
+      # repo_path: "repos/0"   # only needed when the workspace has multiple repos
 
 workflow:
   name: "EcoCharge CLI Pipeline"

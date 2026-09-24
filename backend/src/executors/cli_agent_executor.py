@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from src.registry.base_executor import BaseExecutor, ExecutionContext
 from src.registry.executor_registry import register_executor
 from src.registry.runtime_registry import resolve_runtime, get_registry_creds
-from src.tools.git_fetcher import clone_repo, fetch_file
+from src.tools.git_fetcher import clone_repo, fetch_file, fetch_source
 
 
 @register_executor("cli_agent")
@@ -65,6 +65,12 @@ class CliAgentExecutor(BaseExecutor):
                 "title": "Skill URLs",
                 "description": "GitLab raw file URLs for skill.md files",
             },
+            "context_files": {
+                "type": "array",
+                "items": {"type": "string", "format": "uri"},
+                "title": "Context File URLs",
+                "description": "Files from any repo (raw URL, or a repo URL to clone) placed read-only under context/",
+            },
             "command": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -103,6 +109,7 @@ class CliAgentExecutor(BaseExecutor):
         prompt_url = params.get("prompt_url", "")
         inline_prompt = params.get("prompt", "")
         skill_urls = params.get("skill_urls", [])
+        context_files = params.get("context_files", [])
         env_overrides = params.get("env", {})
         timeout = params.get("timeout", runtime.timeout)
         command_override = params.get("command")
@@ -123,6 +130,16 @@ class CliAgentExecutor(BaseExecutor):
                 name = self._basename(url) or "skill.md"
                 await self._emit(context, f"[{agent_name}] Fetching skill {name}...")
                 await asyncio.to_thread(fetch_file, url, os.path.join(skills_dir, name))
+
+        # 2b. Fetch context files (single files from any repo -> context/)
+        if context_files:
+            context_dir = os.path.join(workspace, "context")
+            for url in context_files:
+                name = self._basename(url) or "context"
+                await self._emit(context, f"[{agent_name}] Fetching context {name}...")
+                await asyncio.to_thread(
+                    fetch_source, url, os.path.join(context_dir, name), branch
+                )
 
         # 3. Resolve prompt (URL takes precedence over inline)
         prompt_text = inline_prompt

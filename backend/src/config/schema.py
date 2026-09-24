@@ -47,7 +47,6 @@ class RuntimeConfig(BaseModel):
     model: Optional[str] = None
     env: Dict[str, str] = Field(default_factory=dict)
     resource_limits: Optional[Dict[str, Any]] = None  # {"cpus": "1", "memory": "512m"}
-    packages: Optional[Dict[str, Any]] = None          # {"install": "..."}
     timeout: int = 300
 
 
