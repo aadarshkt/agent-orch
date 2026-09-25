@@ -1,0 +1,10 @@
+# TLS terminator + reverse proxy in front of the backend.
+# The site address comes from the DOMAIN env var set on the caddy service, so
+# Caddy requests and renews a Let's Encrypt certificate for it automatically.
+{$DOMAIN} {
+	reverse_proxy backend:8010 {
+		# Server-Sent Events (/events/stream): stream immediately, never buffer
+		# or flush on a timer.
+		flush_interval -1
+	}
+}

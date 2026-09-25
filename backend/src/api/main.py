@@ -46,16 +46,30 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Agent Orchestrator API", version="2.0.0", lifespan=lifespan)
 
-# Allow CORS for Next.js frontend
+# CORS: comma-separated origins via CORS_ORIGINS. Unset falls back to local dev
+# origins; "*" is only valid when credentials are not allowed.
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+]
+
+
+def cors_config():
+    raw = os.getenv("CORS_ORIGINS", "").strip()
+    if not raw:
+        return DEFAULT_CORS_ORIGINS, True
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return origins, "*" not in origins
+
+
+cors_origins, cors_allow_credentials = cors_config()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-    ],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

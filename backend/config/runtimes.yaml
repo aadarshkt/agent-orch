@@ -1,6 +1,10 @@
 # Preconfigured runtime presets. Each CLI agent references one of these by name.
 # image   -> pulled from the registry (credentials via backend/.env)
 # command -> default command; inputs reach the container via the AGENT_* env vars
+#
+# Note: beacon / claude-cli / python-agent below point at ghcr.io/eco/* images
+# that are not published, so those nodes will fail to pull. The buildable
+# presets are test-cli, openrouter-agent and aider-agent (see deploy/push-images.sh).
 runtimes:
   # Beacon CLI agent image. The image bundles node + the beacon CLI + the
   # toolchain the agent operates on, and reads its inputs from the AGENT_* env
@@ -25,13 +29,12 @@ runtimes:
       memory: "4g"
     timeout: 1800
 
-  # Local test agent (no git, no network, no API keys). Image source:
-  # backend/docker/test-agent. Build it with:
-  #   docker build -t agent-orch-test-cli:latest backend/docker/test-agent
+  # Test agent (no git, no network, no API keys). Image source:
+  # backend/docker/test-agent. Build and push with: deploy/push-images.sh test-cli
   # It honors the AGENT_* contract and writes ai_review/report.md.
   - name: test-cli
     kind: cli
-    image: agent-orch-test-cli:latest
+    image: ghcr.io/aadarshkt/agent-orch-test-cli:latest
     command: ["/agent/run.sh"]
     env:
       TEST_AGENT_MESSAGE: "hello from the runtime preset"
@@ -39,11 +42,11 @@ runtimes:
 
   # Real LLM-backed agent via OpenRouter. Key comes from backend/.env
   # (OPENROUTER_API_KEY); the model is overridable per agent. Image source:
-  # backend/docker/openrouter-agent. Build it with:
-  #   docker build -t agent-orch-openrouter:latest backend/docker/openrouter-agent
+  # backend/docker/openrouter-agent. Build and push with:
+  #   deploy/push-images.sh openrouter-agent
   - name: openrouter-agent
     kind: cli
-    image: agent-orch-openrouter:latest
+    image: ghcr.io/aadarshkt/agent-orch-openrouter:latest
     command: ["/agent/run.sh"]
     env:
       # Any OpenRouter id; `:free` models cost 0. Override per agent.
@@ -53,6 +56,23 @@ runtimes:
       # Code:    cohere/north-mini-code:free (default), poolside/laguna-s-2.1:free
       # General: nvidia/nemotron-3.5-lightning:free, z-ai/glm-5.2:free
       OPENROUTER_MODEL: "cohere/north-mini-code:free"
+    required_env: [OPENROUTER_API_KEY]
+    timeout: 600
+
+  # Open-source Aider CLI agent (Apache-2.0). Edits the first mounted repo and
+  # leaves the diff for a downstream git_commit node. Image source:
+  # backend/docker/aider-agent. Build and push with:
+  #   deploy/push-images.sh aider-agent
+  # Routed through OpenRouter so it reuses the same key as openrouter-agent.
+  - name: aider-agent
+    kind: cli
+    image: ghcr.io/aadarshkt/agent-orch-aider:latest
+    command: ["/agent/run.sh"]
+    env:
+      OPENAI_API_BASE: "https://openrouter.ai/api/v1"
+      OPENAI_API_KEY: "${OPENROUTER_API_KEY}"
+      # Override per agent; must be prefixed with `openrouter/` for Aider.
+      AIDER_MODEL: "openrouter/cohere/north-mini-code:free"
     required_env: [OPENROUTER_API_KEY]
     timeout: 600
 

@@ -1,0 +1,52 @@
+#cloud-config
+# First-boot provisioning for the agent-orch backend host.
+#
+# Rendered by OpenTofu (infra/main.tf) and passed as EC2 user_data. It installs
+# Docker, stages the stack files, then hands off to bootstrap.sh, which mounts
+# the data volume and starts the compose stack.
+#
+# Secrets are deliberately NOT part of user_data — bootstrap.sh pulls them from
+# SSM Parameter Store at boot, so they never appear here or in Terraform state.
+
+package_update: true
+# Note: `awscli` is NOT available on Ubuntu 24.04, and one missing package fails
+# the whole step — bootstrap.sh installs the AWS CLI v2 itself instead.
+packages:
+  - docker.io
+  - docker-compose-v2
+  - unzip
+
+write_files:
+  - path: /opt/agent-orch/docker-compose.yml
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: ${compose_b64}
+
+  - path: /opt/agent-orch/Caddyfile
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: ${caddyfile_b64}
+
+  - path: /opt/agent-orch/bootstrap.sh
+    owner: root:root
+    permissions: "0755"
+    encoding: b64
+    content: ${bootstrap_b64}
+
+  - path: /opt/agent-orch/deploy.conf
+    owner: root:root
+    permissions: "0600"
+    content: |
+      DOMAIN="${domain}"
+      BACKEND_IMAGE="${backend_image}"
+      AWS_REGION="${aws_region}"
+      SSM_PREFIX="${ssm_prefix}"
+      CORS_ORIGINS="${cors_origins}"
+      POSTGRES_USER="${postgres_user}"
+      POSTGRES_DB="${postgres_db}"
+      GHCR_USERNAME="${ghcr_username}"
+
+runcmd:
+  - [bash, /opt/agent-orch/bootstrap.sh]

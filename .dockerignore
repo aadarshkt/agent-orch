@@ -1,0 +1,21 @@
+# Keep the build context small and never leak local secrets into images.
+.git
+.github
+.commandcode
+ecochargeapp-feature-vw-poc
+
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/node_modules
+**/.next
+
+backend/.env
+backend/.env.local
+backend/keys
+
+frontend
+infra

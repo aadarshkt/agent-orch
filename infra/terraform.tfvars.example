@@ -1,0 +1,31 @@
+# Copy to terraform.tfvars and edit:
+#   cp infra/terraform.tfvars.example infra/terraform.tfvars
+#
+# Secrets are deliberately NOT in this file — infra/apply.sh injects them from
+# backend/keys/ (or backend/.env) as TF_VAR_* environment variables.
+
+aws_region    = "us-east-1"
+instance_type = "t3.large"
+
+# Required: the deployed frontend origin(s). CORS is the only gate on this API,
+# so the exact Vercel origin must be listed here.
+cors_origins = ["https://your-app.vercel.app"]
+
+# Optional: serve the API on your own hostname instead of "<elastic-ip>.sslip.io".
+# domain          = "api.example.com"
+# route53_zone_id = "Z0123456789ABCDEFGHIJ"
+
+# Optional: SSH access. Port 22 stays closed unless BOTH are set.
+# key_name = "my-keypair"
+# ssh_cidr = "203.0.113.10/32"
+
+# Optional overrides.
+# backend_image   = "ghcr.io/aadarshkt/agent-orch-backend:latest"
+# ghcr_username   = "aadarshkt"
+# data_volume_gb  = 50
+# root_volume_gb  = 30
+
+# Secrets, sourced automatically by infra/apply.sh:
+#   OPENROUTER_API_KEY <- backend/keys/openrouter-key.txt (or backend/.env)
+#   GITHUB_TOKEN       <- backend/keys/github-token.txt   (or backend/.env)
+#   GHCR_TOKEN         <- backend/keys/ghcr-token.txt     (or $GHCR_TOKEN)

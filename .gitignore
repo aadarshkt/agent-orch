@@ -22,3 +22,11 @@ __pycache__/
 
 ecochargeapp-feature-vw-poc
 backend/keys
+
+# OpenTofu (infra/) — state and local variable files stay local.
+# .terraform.lock.hcl is intentionally tracked.
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/*.tfvars
+infra/crash.log

@@ -1,0 +1,69 @@
+# Host stack for the agent-orch backend.
+#
+# Deployed to /opt/agent-orch by cloud-init and started with:
+#   docker compose --env-file /mnt/data/agent-orch/backend.env \
+#     -f /opt/agent-orch/docker-compose.yml up -d
+#
+# Every environment-specific value (DOMAIN, BACKEND_IMAGE, secrets) is
+# interpolated from that env file, so this file itself never changes per env.
+
+name: agent-orch
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    volumes:
+      - /mnt/data/agent-orch/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - agent-orch
+
+  backend:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE must be set}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - /mnt/data/agent-orch/backend.env
+    volumes:
+      # docker-out-of-docker: the cli_agent executor shells out to `docker run`
+      # to start ephemeral agent containers on this host.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Same path on both sides on purpose — the executor passes
+      # `-v <node_dir>:/workspace` and the host daemon resolves <node_dir>.
+      - /mnt/data/agent-orch/workspaces:/mnt/data/agent-orch/workspaces
+      # Persist the `docker login` credentials the CLI executor writes.
+      - /mnt/data/agent-orch/.docker:/root/.docker
+    networks:
+      - agent-orch
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN must be set}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /opt/agent-orch/Caddyfile:/etc/caddy/Caddyfile:ro
+      # On the data volume so ACME certs survive an instance replacement.
+      - /mnt/data/agent-orch/caddy:/data
+    networks:
+      - agent-orch
+
+networks:
+  agent-orch:
+    name: agent-orch
