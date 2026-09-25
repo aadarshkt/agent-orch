@@ -1,0 +1,291 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# EcoCharge master workflow — mirrors the ecochargeapp-feature-vw-poc CI pipeline
+# (`.gitlab-ci.yml`) in the current platform format: runtimes + agents + workflow.
+#
+# Import:  POST /workflows/import  { "yaml_path": "config/ecocharge_master.yaml" }
+#
+# Two execution families, exactly as in the CI:
+#   * cli_agent    -> Beacon CLI headless  (runs inside the `beacon` container)
+#   * cloud_agent  -> Beacon Cloud REST API (classify / CR / thinking chain)
+#
+# Every cli_agent input is a Source { repo, ref, path } — one shape everywhere:
+#   repos   -> mounted working clones (editable, commit targets)
+#   skills  -> /workspace/.agent/skills/<name>
+#   context -> /workspace/.agent/context/<name>
+#   prompt  -> /workspace/.agent/prompt.md
+#
+# Each node declares `artifacts` globs; the executor collects the matched files
+# and auto-mounts them for the next node under
+# /workspace/.agent/context/upstream/<node>/. That is the only handoff mechanism.
+#
+# BUILD STATUS (things not built yet are marked inline where they appear):
+#   IMPLEMENTED : cli_agent (Source contract), git_commit, script_runner
+#   STUB        : cloud_agent (remote call + execute-with-files + poll + download)
+#   STUB        : api_call (used for posting GitLab notes)
+#
+# Notes:
+#  - Nodes run sequentially (single-path routing). The CI's parallel stage
+#    (figma-screens || design-docs) and its independent jobs (code-review on
+#    every MR, build-analysis on build failure) are linearized here.
+#  - Secrets (GITLAB_TOKEN, BEACON_API_TOKEN, FIGMA_ACCESS_TOKEN, GIT_REPO_URL)
+#    are read from backend/.env and forwarded per the runtime `required_env`.
+# ─────────────────────────────────────────────────────────────────────────────
+version: 1
+
+# Shared anchor for the app repo (extra top-level key; ignored by the parser).
+_common:
+  app: &app
+    repo: "https://gitlab.kpit.com/eco-charge-vw-poc/ecochargeapp.git"
+    ref: "feature/vw-poc"
+
+runtimes:
+  # Beacon CLI headless image (cli_agent). Must implement the AGENT_* env contract.
+  - name: beacon
+    kind: cli
+    image: ghcr.io/eco/beacon-agent:latest
+    command:
+      - sh
+      - -lc
+      - >-
+        beacon --headless --auto --stream
+        --setcluster "$BEACON_CLUSTER"
+        --setmodel "$BEACON_MODEL"
+        --prompt "$AGENT_PROMPT_FILE"
+    env:
+      BEACON_CLUSTER: "KAI-CV"
+      BEACON_MODEL: "ultra-thinking"
+    required_env:
+      - GITLAB_TOKEN
+    resource_limits:
+      cpus: "2.0"
+      memory: "4g"
+    timeout: 1800
+
+  # Beacon Cloud REST endpoint (cloud_agent — STUB executor). No image/command.
+  - name: beacon-cloud
+    kind: cloud
+    endpoint: "${BEACON_API_BASE_URL}"
+    model: gemini-pro
+    env: {}
+    required_env:
+      - BEACON_API_BASE_URL
+      - BEACON_API_TOKEN
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agents
+# ─────────────────────────────────────────────────────────────────────────────
+agents:
+  # ══ Independent CI jobs (linearized to the front of the graph) ══════════════
+
+  # CI job `ai-code-review` — runs on every MR, independent of the build.
+  code_review:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/CodeReviewAgent"
+      prompt:
+        <<: *app
+        path: "Skills/CodeReviewAgent/CodeReviewAgent.md"
+      artifacts: ["ai_review/**/*.md", "ai_review/**/*.json"]
+      env: { BEACON_TIMEOUT: "1200" }
+      timeout: 1200
+    # NOTE: CI then parses the report and posts inline MR notes
+    # (scripts/ci/parse_review_md.py + post_review_notes.py). That glue would be
+    # an api_call node (STUB) — omitted here.
+
+  # CI job `ai-build-analysis` — runs only when the build child pipeline FAILS.
+  build_analysis:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/Android Build Agent Skills"
+      prompt:
+        <<: *app
+        path: "Skills/Android Build Agent Skills/analyze-and-report-build-errors-SKILL.md"
+      artifacts: ["ai_analysis/**/*.md", "errors.jsonl", "build.log"]
+      timeout: 1800
+    # NOTE: in CI the build.log is fetched from the child pipeline
+    # (fetch_child_build_log.sh) and pre-parsed into errors.jsonl. Here that log
+    # must come from an upstream node or explicit `context`.
+
+  # ══ Beacon Cloud chain (STUB executor) ══════════════════════════════════════
+  # These four are NOT cli agents — the CI runs them via run-agent-chain.py
+  # against the Beacon Cloud REST API (POST /agents/{id}/execute-with-files,
+  # poll GET /executions, then download the report artifact). The platform's
+  # cloud_agent executor is currently a stub; the `system_prompt`/`gitlab_urls`
+  # inputs below satisfy its placeholder schema, and the real contract is noted
+  # per agent. Required agent IDs come from the environment.
+
+  # CI job `ai-ticket-classification` (Classifier Agent).
+  classifier:
+    type: cloud_agent
+    runtime: beacon-cloud
+    inputs:
+      system_prompt: "Extract the KAP ticket id from the commit message and classify it as Bug / Change Request / New Feature."
+      gitlab_urls: ["https://gitlab.kpit.com/eco-charge-vw-poc/ecochargeapp.git"]
+      model: gemini-pro
+      env: { CLASSIFIER_AGENT_ID: "${CLASSIFIER_AGENT_ID}" }
+    # STUB: real call = POST {BEACON_API_BASE_URL}/agents/{CLASSIFIER_AGENT_ID}/execute-with-files.
+
+  # CI job `ai-cr-analysis` (CR Agent, Mode A — feasibility + scope).
+  cr_analysis:
+    type: cloud_agent
+    runtime: beacon-cloud
+    inputs:
+      system_prompt: "Perform Mode A analysis for the ticket: feasibility assessment, impact analysis, scope definition. Skip for Bug/Task."
+      gitlab_urls: ["https://gitlab.kpit.com/eco-charge-vw-poc/ecochargeapp.git"]
+      model: gemini-pro
+      env: { CR_AGENT_ID: "${CR_AGENT_ID}" }
+    # STUB: real call = POST .../agents/{CR_AGENT_ID}/execute-with-files (input = classification report).
+
+  # CI job `ai-thinking` (Thinking Agent — concept design).
+  thinking:
+    type: cloud_agent
+    runtime: beacon-cloud
+    inputs:
+      system_prompt: "Design the engineering concept and working algorithm for the approved change request."
+      gitlab_urls: ["https://gitlab.kpit.com/eco-charge-vw-poc/ecochargeapp.git"]
+      model: gemini-pro
+      env: { THINKING_AGENT_ID: "${THINKING_AGENT_ID}" }
+    # STUB: real call = POST .../agents/{THINKING_AGENT_ID}/execute-with-files (input = CR analysis report).
+
+  # CI job `ai-cr-approval` (CR Agent, Mode B — concept approval + handover).
+  cr_approval:
+    type: cloud_agent
+    runtime: beacon-cloud
+    inputs:
+      system_prompt: "Perform Mode B: review the concept, approve or reject, and produce the SysReq handover artifact."
+      gitlab_urls: ["https://gitlab.kpit.com/eco-charge-vw-poc/ecochargeapp.git"]
+      model: gemini-pro
+      env: { CR_AGENT_ID: "${CR_AGENT_ID}" }
+    # STUB: real call = POST .../agents/{CR_AGENT_ID}/execute-with-files (input = concept note).
+
+  # ══ Beacon CLI agents (IMPLEMENTED) ═════════════════════════════════════════
+
+  # CI job `ai-figma-screens` — needs Figma MCP on the runner.
+  figma_screens:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/FigmaDesignToScreen"
+      prompt:
+        <<: *app
+        path: "Skills/FigmaDesignToScreen/prompt/FIGMA_DESIGN_TO_SCREEN_PROMPT.md"
+      artifacts: ["ai_analysis/figma_screen_brief.json", "ai_analysis/figma_build_report.md"]
+      env:
+        FIGMA_URL: "${FIGMA_URL}"
+        FIGMA_ACCESS_TOKEN: "${FIGMA_ACCESS_TOKEN}"
+      timeout: 1800
+    # NOTE: requires Figma MCP tools available inside the image.
+
+  # CI job `ai-design-docs` — runs in PARALLEL with figma-screens in CI.
+  design_docs:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/design-doc-agent"
+      prompt:
+        <<: *app
+        path: "Skills/design-doc-agent/SKILL.md"
+      artifacts: ["docs/design/**/*.md", "ai_analysis/design_docs_*.md"]
+      timeout: 1800
+
+  # CI job `ai-figma-to-code` — applies design changes to the mounted repo.
+  # (In CI the agent clones + pushes itself; here the container edits the
+  # mounted workspace and the `commit` node pushes.)
+  figma_to_code:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/FigmaToCodeAgent"
+      prompt:
+        <<: *app
+        path: "Skills/FigmaToCodeAgent/prompt/FIGMA_CHANGE_TO_CODE_PROMPT.md"
+      artifacts: ["ai_analysis/figma_to_code_*.md", "ai_analysis/figma_change_manifest.json"]
+      env:
+        GIT_REPO_URL: "${GIT_REPO_URL}"
+        BASE_BRANCH: "feature/vw-poc"
+      timeout: 1800
+
+  # CI job `ai-test-generation` — compilable JVM unit tests + traceability.
+  test_gen:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/UTAgent"
+      prompt:
+        <<: *app
+        path: "Skills/UTAgent/AGENT.md"
+      artifacts: ["ai_tests/**/*.kt", "ai_tests/**/*.json"]
+      timeout: 1500
+
+  # Push the changes figma_to_code made in the workspace (host-side git).
+  committer:
+    type: git_commit
+    inputs:
+      source_node_id: figma_to_code
+      repo: ecochargeapp
+      commit_message: "feat(ui): EcoCharge Figma design-to-code changes"
+      branch: "feature/vw-poc"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Graph
+# ─────────────────────────────────────────────────────────────────────────────
+workflow:
+  name: "EcoCharge Master Pipeline"
+  description: "Full CI-mirrored pipeline: review -> build analysis -> cloud chain -> design -> code -> tests -> commit."
+  hitl_enabled: true
+  nodes:
+    - { id: code_review, agent: code_review, requires_approval: false }
+    - { id: build_analysis, agent: build_analysis, requires_approval: false }
+    - { id: classify, agent: classifier, requires_approval: false }
+    - { id: cr_analysis, agent: cr_analysis, requires_approval: false }
+    - { id: thinking, agent: thinking, requires_approval: false }
+    - { id: cr_approval, agent: cr_approval, requires_approval: true }   # Gateway: concept approval
+    - { id: figma_screens, agent: figma_screens, requires_approval: false }
+    - { id: design_docs, agent: design_docs, requires_approval: false }
+    - { id: figma_to_code, agent: figma_to_code, requires_approval: true }  # Gateway: code approval
+    - { id: test_gen, agent: test_gen, requires_approval: false }
+    - { id: commit, agent: committer, requires_approval: true }
+  edges:
+    # Independent MR jobs, then the cloud chain, then design -> code -> tests -> commit.
+    - { from: code_review, to: build_analysis, condition: success }
+    - { from: build_analysis, to: classify, condition: success }
+    - { from: classify, to: cr_analysis, condition: success }
+    - { from: cr_analysis, to: thinking, condition: success }
+    - { from: thinking, to: cr_approval, condition: success }
+    - { from: cr_approval, to: figma_screens, condition: success }
+    - { from: figma_screens, to: design_docs, condition: success }
+    - { from: design_docs, to: figma_to_code, condition: success }
+    - { from: figma_to_code, to: test_gen, condition: success }
+    - { from: test_gen, to: commit, condition: success }

@@ -37,6 +37,22 @@ class WorkflowConfig(BaseModel):
 # DB-facing models above.
 # ──────────────────────────────────────────────────────────────
 
+class Source(BaseModel):
+    """
+    The single way to point at an asset.
+
+    A git repo checked out at a ref, optionally narrowed to a path within it.
+    Used for repos, skills, context and prompt — one shape everywhere.
+
+    - repo: git URL
+    - ref:  branch | tag | sha (always explicit)
+    - path: directory or file within the repo; "" means the whole repo
+    """
+    repo: str
+    ref: str
+    path: str = ""
+
+
 class RuntimeConfig(BaseModel):
     """A named runtime preset (environment) referenced by agents."""
     name: str
@@ -46,6 +62,7 @@ class RuntimeConfig(BaseModel):
     endpoint: Optional[str] = None
     model: Optional[str] = None
     env: Dict[str, str] = Field(default_factory=dict)
+    required_env: List[str] = Field(default_factory=list)  # env vars that must be present
     resource_limits: Optional[Dict[str, Any]] = None  # {"cpus": "1", "memory": "512m"}
     timeout: int = 300
 

@@ -60,7 +60,9 @@ def make_node_func(
 
         except Exception as e:
             print(f"Error executing node {node_config['id']}: {str(e)}")
+            # Preserve upstream state (messages/artifacts) on failure.
             return {
+                **state,
                 "error": str(e),
                 "status": "failed",
                 "current_step": node_config["id"],

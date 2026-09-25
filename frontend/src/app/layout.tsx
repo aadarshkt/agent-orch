@@ -1,13 +1,23 @@
 import type { Metadata } from 'next'
-import { Inter } from 'next/font/google'
+import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
-import Navbar from './components/Navbar'
 
-const inter = Inter({ subsets: ['latin'] })
+const geistSans = Geist({
+  subsets: ['latin'],
+  variable: '--font-geist-sans',
+  display: 'swap',
+})
+
+const geistMono = Geist_Mono({
+  subsets: ['latin'],
+  variable: '--font-geist-mono',
+  display: 'swap',
+})
 
 export const metadata: Metadata = {
   title: 'Agent Orchestrator',
-  description: 'Configure, compose, and execute agent workflows',
+  description:
+    'Declare an agentic workflow in one self-contained YAML file, run it locally across heterogeneous executors, stream it live, and approve by hand.',
 }
 
 export default function RootLayout({
@@ -16,13 +26,11 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en">
-      <body className={inter.className}>
-        <Navbar />
-        <div className="main-content">
-          {children}
-        </div>
-      </body>
+    <html
+      lang="en"
+      className={`${geistSans.variable} ${geistMono.variable}`}
+    >
+      <body>{children}</body>
     </html>
   )
 }

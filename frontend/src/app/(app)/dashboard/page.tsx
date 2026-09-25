@@ -137,7 +137,6 @@ export default function Dashboard() {
       {/* ───── Workflow List ───── */}
       {workflows.length === 0 ? (
         <div className="empty-state">
-          <p className="empty-state-icon">◆</p>
           <h3>No workflows yet</h3>
           <p className="text-muted">
             <a href="/agents" className="link">Create agents</a>, then{' '}
@@ -165,10 +164,9 @@ export default function Dashboard() {
                 </div>
               </div>
               <button
-                className="btn btn-glow"
+                className="btn btn-glow btn-block mt-4"
                 onClick={() => executeWorkflow(w.id)}
                 disabled={executingId !== null}
-                style={{ marginTop: '1rem', width: '100%' }}
               >
                 {executingId === w.id ? 'Running...' : 'Execute'}
               </button>

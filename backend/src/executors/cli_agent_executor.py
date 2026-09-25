@@ -1,28 +1,64 @@
 """
 CLI Agent Executor.
 
-Runs a CLI agent inside a container (or host subprocess fallback). The full
-lifecycle: clone repo(s) into a fresh workspace -> fetch prompt/skills -> run
-the runtime's image -> stream output to SSE -> record artifacts.
+Runs a CLI agent inside a container. The full lifecycle:
 
-The executor is intentionally "yolo": one-shot, non-interactive. A timeout
-marks the node failed.
+    resolve Sources (repos / skills / context / prompt) -> mount the node
+    workspace -> inject env -> run the runtime image -> stream output to SSE
+    -> collect declared artifacts.
+
+Every input is a ``Source { repo, ref, path }``. The executor never assumes a
+path convention: it materializes each Source, mounts the node directory at
+/workspace, and tells the container where everything is via env vars:
+
+    AGENT_WORKSPACE     /workspace
+    AGENT_REPOS_DIR     /workspace/repos
+    AGENT_SKILLS_DIR    /workspace/.agent/skills
+    AGENT_CONTEXT_DIR   /workspace/.agent/context
+    AGENT_PROMPT_FILE   /workspace/.agent/prompt.md
+
+The executor is intentionally one-shot and non-interactive; a timeout marks the
+node failed.
 """
 import asyncio
+import glob as globlib
 import os
+import re
 import tempfile
-from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from typing import Any, Dict, List
 
 from src.registry.base_executor import BaseExecutor, ExecutionContext
 from src.registry.executor_registry import register_executor
 from src.registry.runtime_registry import resolve_runtime, get_registry_creds
-from src.tools.git_fetcher import clone_repo, fetch_file, fetch_source
+from src.config.schema import Source
+from src.tools.git_fetcher import resolve_source, repo_name
 
+# One shape for every asset.
+SOURCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "repo": {"type": "string", "title": "Repo", "description": "Git URL"},
+        "ref": {"type": "string", "title": "Ref", "description": "branch | tag | sha"},
+        "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Directory or file inside the repo; empty = whole repo",
+            "default": "",
+        },
+    },
+    "required": ["repo", "ref"],
+}
+
+_ENV_REF = re.compile(r"\$\{(\w+)\}")
+
+
+def _interpolate(value: str) -> str:
+    """Replace ${VAR} with the host environment value (missing -> empty)."""
+    return _ENV_REF.sub(lambda m: os.getenv(m.group(1), ""), str(value))
 
 @register_executor("cli_agent")
 class CliAgentExecutor(BaseExecutor):
-    """Run a CLI agent in a container with repo + prompt + skills."""
+    """Run a CLI agent in a container from Source-based inputs."""
 
     runtime_kind = "cli"
     display_name = "CLI Agent"
@@ -36,40 +72,34 @@ class CliAgentExecutor(BaseExecutor):
                 "title": "Runtime",
                 "description": "Named CLI runtime preset (from runtimes.yaml)",
             },
-            "repo_urls": {
+            "repos": {
                 "type": "array",
-                "items": {"type": "string", "format": "uri"},
-                "title": "Repository URLs",
-                "description": "Repos to clone into the workspace",
+                "items": SOURCE_SCHEMA,
+                "title": "Working repos",
+                "description": "Repos to clone, mount and (optionally) commit",
             },
-            "branch": {
-                "type": "string",
-                "default": "main",
-                "title": "Branch",
+            "skills": {
+                "type": "array",
+                "items": SOURCE_SCHEMA,
+                "title": "Skills",
+                "description": "Skill bundles, materialized under .agent/skills/",
             },
-            "prompt_url": {
-                "type": "string",
-                "format": "uri",
-                "title": "Prompt URL",
-                "description": "GitLab raw file URL for prompt.md",
+            "context": {
+                "type": "array",
+                "items": SOURCE_SCHEMA,
+                "title": "Context",
+                "description": "Read-only inputs, materialized under .agent/context/",
             },
             "prompt": {
-                "type": "string",
-                "title": "Inline Prompt",
-                "description": "Alternative to prompt_url",
-                "ui:widget": "textarea",
+                **SOURCE_SCHEMA,
+                "title": "Prompt",
+                "description": "Prompt file, materialized to .agent/prompt.md",
             },
-            "skill_urls": {
+            "artifacts": {
                 "type": "array",
-                "items": {"type": "string", "format": "uri"},
-                "title": "Skill URLs",
-                "description": "GitLab raw file URLs for skill.md files",
-            },
-            "context_files": {
-                "type": "array",
-                "items": {"type": "string", "format": "uri"},
-                "title": "Context File URLs",
-                "description": "Files from any repo (raw URL, or a repo URL to clone) placed read-only under context/",
+                "items": {"type": "string"},
+                "title": "Artifacts",
+                "description": "Globs (relative to the workspace) to collect and hand off",
             },
             "command": {
                 "type": "array",
@@ -103,105 +133,89 @@ class CliAgentExecutor(BaseExecutor):
         if not runtime_name:
             raise ValueError("'runtime' is required for cli_agent")
         runtime = resolve_runtime(runtime_name)
+        if not runtime.image:
+            raise ValueError(f"Runtime '{runtime_name}' has no image configured")
 
-        repo_urls = params.get("repo_urls", [])
-        branch = params.get("branch", "main")
-        prompt_url = params.get("prompt_url", "")
-        inline_prompt = params.get("prompt", "")
-        skill_urls = params.get("skill_urls", [])
-        context_files = params.get("context_files", [])
-        env_overrides = params.get("env", {})
+        repos = params.get("repos") or []
+        skills = params.get("skills") or []
+        extra_context = params.get("context") or []
+        prompt = _as_source(params.get("prompt"))
+        artifact_globs = params.get("artifacts") or []
+        env_overrides = params.get("env") or {}
         timeout = params.get("timeout", runtime.timeout)
         command_override = params.get("command")
 
-        workspace = self._make_workspace(context.thread_id, node_id)
-        await self._emit(context, f"[{agent_name}] Workspace: {workspace}")
+        node_dir = self._make_workspace(context.thread_id, node_id)
+        cache_root = os.path.join(os.path.dirname(node_dir), ".cache")
+        await self._emit(context, f"[{agent_name}] Workspace: {node_dir}")
 
-        # 1. Clone repo(s)
-        for i, url in enumerate(repo_urls):
-            dest = workspace if len(repo_urls) == 1 else os.path.join(workspace, "repos", str(i))
-            await self._emit(context, f"[{agent_name}] Cloning {url} (branch {branch})...")
-            await asyncio.to_thread(clone_repo, url, dest, branch)
+        # 1. Working repos -> repos/<name>
+        repos_info: List[Dict[str, Any]] = []
+        for source in repositories(repos):
+            name = repo_name(source.repo)
+            dest = os.path.join(node_dir, "repos", name)
+            await self._emit(context, f"[{agent_name}] Checking out {source.repo} @ {source.ref}...")
+            await asyncio.to_thread(resolve_source, source, dest, cache_root)
+            repos_info.append({"name": name, "ref": source.ref, "dir": dest})
 
-        # 2. Fetch skills
-        if skill_urls:
-            skills_dir = os.path.join(workspace, "skills")
-            for url in skill_urls:
-                name = self._basename(url) or "skill.md"
-                await self._emit(context, f"[{agent_name}] Fetching skill {name}...")
-                await asyncio.to_thread(fetch_file, url, os.path.join(skills_dir, name))
+        # 2. Skills -> .agent/skills/<name>
+        for source in repositories(skills):
+            name = _asset_name(source)
+            dest = os.path.join(node_dir, ".agent", "skills", name)
+            await self._emit(context, f"[{agent_name}] Resolving skill {name}...")
+            await asyncio.to_thread(resolve_source, source, dest, cache_root)
 
-        # 2b. Fetch context files (single files from any repo -> context/)
-        if context_files:
-            context_dir = os.path.join(workspace, "context")
-            for url in context_files:
-                name = self._basename(url) or "context"
-                await self._emit(context, f"[{agent_name}] Fetching context {name}...")
-                await asyncio.to_thread(
-                    fetch_source, url, os.path.join(context_dir, name), branch
-                )
+        # 3. Explicit context -> .agent/context/<name>
+        for source in repositories(extra_context):
+            name = _asset_name(source)
+            dest = os.path.join(node_dir, ".agent", "context", name)
+            await self._emit(context, f"[{agent_name}] Resolving context {name}...")
+            await asyncio.to_thread(resolve_source, source, dest, cache_root)
 
-        # 3. Resolve prompt (URL takes precedence over inline)
-        prompt_text = inline_prompt
-        if prompt_url:
-            prompt_path = os.path.join(workspace, "prompt.md")
-            await self._emit(context, f"[{agent_name}] Fetching prompt...")
-            await asyncio.to_thread(fetch_file, prompt_url, prompt_path)
-            prompt_text = await asyncio.to_thread(self._read, prompt_path)
+        # 3b. Auto-mount upstream artifacts -> .agent/context/upstream/<node>/
+        await self._mount_upstream_artifacts(node_dir, state)
 
-        # 4. Run the container
-        image = runtime.image
-        if not image:
-            raise ValueError(f"Runtime '{runtime_name}' has no image configured")
+        # 4. Prompt -> .agent/prompt.md
+        if prompt:
+            dest = os.path.join(node_dir, ".agent", "prompt.md")
+            await self._emit(context, f"[{agent_name}] Resolving prompt...")
+            await asyncio.to_thread(resolve_source, prompt, dest, cache_root)
+
+        # 5. Build env + write the env-file (secrets never touch the process args)
+        env = self._build_env(runtime, env_overrides)
+        self._check_required_env(runtime, env)
+        self._write_env_file(node_dir, env)
 
         await self._docker_login(context)
         cmd = self._build_docker_cmd(
-            image=image,
+            image=runtime.image,
             command=command_override or runtime.command or [],
-            workspace=workspace,
-            env={**runtime.env, **env_overrides},
+            node_dir=node_dir,
             resource_limits=runtime.resource_limits or {},
-            prompt=prompt_text,
         )
-        await self._emit(context, f"[{agent_name}] Running {image}...")
+        await self._emit(context, f"[{agent_name}] Running {runtime.image}...")
 
         try:
             return_code, output = await self._run(cmd, timeout, context)
         except TimeoutError:
-            artifacts = dict(state.get("artifacts", {}))
-            artifacts[f"{node_id}_workspace"] = workspace
-            artifacts[f"{node_id}_output"] = f"Timed out after {timeout}s"
-            messages = list(state.get("messages", []))
-            messages.append({"role": "assistant", "content": f"{agent_name} timed out."})
             await self._emit(context, f"[{agent_name}] Timed out after {timeout}s.")
-            return {
-                **state,
-                "messages": messages,
-                "artifacts": artifacts,
-                "current_step": node_id,
-                "status": "failed",
-                "error": f"Timed out after {timeout}s",
-            }
+            return self._result(
+                state, node_dir, node_id, artifact_globs,
+                status="failed", error=f"Timed out after {timeout}s",
+                message=f"{agent_name} timed out.", repos_info=repos_info,
+            )
 
-        artifacts = dict(state.get("artifacts", {}))
-        artifacts[f"{node_id}_workspace"] = workspace
-        artifacts[f"{node_id}_exit_code"] = return_code
-        artifacts[f"{node_id}_output"] = output
-
-        messages = list(state.get("messages", []))
-        messages.append({"role": "assistant", "content": output[-2000:] or f"{agent_name} completed."})
-
+        found = self._collect_artifacts(node_dir, artifact_globs)
         status = "completed" if return_code == 0 else "failed"
         await self._emit(context, f"[{agent_name}] Finished (exit {return_code}).")
 
-        return {
-            **state,
-            "messages": messages,
-            "artifacts": artifacts,
-            "current_step": node_id,
-            "status": status,
-            "error": None if return_code == 0 else f"CLI exited with code {return_code}",
-        }
+        return self._result(
+            state, node_dir, node_id, artifact_globs,
+            status=status, error=None if return_code == 0 else f"CLI exited with code {return_code}",
+            message=output[-2000:] or f"{agent_name} completed.",
+            exit_code=return_code, output=output, artifacts_found=found,
+            repos_info=repos_info,
+        )
 
     # ── helpers ──────────────────────────────────────────────
 
@@ -211,34 +225,70 @@ class CliAgentExecutor(BaseExecutor):
         os.makedirs(path, exist_ok=True)
         return path
 
-    def _basename(self, url: str) -> str:
-        return os.path.basename(urlparse(url).path)
+    def _write_env_file(self, node_dir: str, env: Dict[str, str]) -> None:
+        path = os.path.join(node_dir, ".agent", "env")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            for key, value in env.items():
+                f.write(f"{key}={str(value).replace(chr(10), ' ')}\n")
 
-    def _read(self, path: str) -> str:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
+    def _build_env(self, runtime, overrides: Dict[str, str]) -> Dict[str, str]:
+        env = {
+            "AGENT_WORKSPACE": "/workspace",
+            "AGENT_REPOS_DIR": "/workspace/repos",
+            "AGENT_SKILLS_DIR": "/workspace/.agent/skills",
+            "AGENT_CONTEXT_DIR": "/workspace/.agent/context",
+            "AGENT_PROMPT_FILE": "/workspace/.agent/prompt.md",
+        }
+        for key, value in {**runtime.env, **overrides}.items():
+            env[key] = _interpolate(value)
+        return env
+
+    def _check_required_env(self, runtime, env: Dict[str, str]) -> None:
+        missing = [k for k in (runtime.required_env or []) if not env.get(k)]
+        if missing:
+            raise ValueError(
+                f"Runtime '{runtime.name}' is missing required env: {', '.join(missing)}"
+            )
+
+    async def _mount_upstream_artifacts(self, node_dir: str, state: Dict[str, Any]) -> None:
+        artifacts = state.get("artifacts", {}) or {}
+        upstream_dir = os.path.join(node_dir, ".agent", "context", "upstream")
+        for key, paths in artifacts.items():
+            if not key.endswith("_artifacts") or not isinstance(paths, list):
+                continue
+            node = key[: -len("_artifacts")]
+            for path in paths:
+                if os.path.isfile(path):
+                    dest_dir = os.path.join(upstream_dir, node)
+                    await asyncio.to_thread(_copy_file, path, dest_dir)
+
+    def _collect_artifacts(self, node_dir: str, patterns: List[str]) -> List[str]:
+        found: List[str] = []
+        for pattern in patterns:
+            for path in sorted(globlib.glob(os.path.join(node_dir, pattern), recursive=True)):
+                if os.path.isfile(path):
+                    found.append(path)
+        return found
 
     def _build_docker_cmd(
         self,
         image: str,
         command: List[str],
-        workspace: str,
-        env: Dict[str, str],
+        node_dir: str,
         resource_limits: Dict[str, Any],
-        prompt: str,
     ) -> List[str]:
         cmd = ["docker", "run", "--rm"]
         if resource_limits.get("cpus"):
             cmd += ["--cpus", str(resource_limits["cpus"])]
         if resource_limits.get("memory"):
             cmd += ["--memory", str(resource_limits["memory"])]
-        for k, v in env.items():
-            cmd += ["-e", f"{k}={v}"]
-        cmd += ["-v", f"{workspace}:/workspace", "-w", "/workspace"]
+        # Secrets go through a mounted env-file, never -e (which leaks to
+        # the process table and `docker inspect`).
+        cmd += ["--env-file", "/workspace/.agent/env"]
+        cmd += ["-v", f"{node_dir}:/workspace", "-w", "/workspace"]
         cmd.append(image)
         cmd += [str(c) for c in command]
-        if prompt:
-            cmd.append(prompt)
         return cmd
 
     async def _docker_login(self, context: ExecutionContext) -> None:
@@ -293,8 +343,73 @@ class CliAgentExecutor(BaseExecutor):
 
         return return_code, "\n".join(lines)
 
+    def _result(
+        self,
+        state: Dict[str, Any],
+        node_dir: str,
+        node_id: str,
+        artifact_globs: List[str],
+        status: str,
+        error,
+        message: str,
+        exit_code=None,
+        output=None,
+        artifacts_found=None,
+        repos_info=None,
+    ) -> Dict[str, Any]:
+        artifacts = dict(state.get("artifacts", {}))
+        artifacts[f"{node_id}_workspace"] = node_dir
+        artifacts[f"{node_id}_repos"] = repos_info or []
+        if exit_code is not None:
+            artifacts[f"{node_id}_exit_code"] = exit_code
+        if output is not None:
+            artifacts[f"{node_id}_output"] = output
+        if artifacts_found is None:
+            artifacts_found = self._collect_artifacts(node_dir, artifact_globs)
+        artifacts[f"{node_id}_artifacts"] = artifacts_found
+
+        messages = list(state.get("messages", []))
+        messages.append({"role": "assistant", "content": message})
+
+        return {
+            **state,
+            "messages": messages,
+            "artifacts": artifacts,
+            "current_step": node_id,
+            "status": status,
+            "error": error,
+        }
+
     async def _emit(self, context: ExecutionContext, data: str) -> None:
         if context.event_bus:
             await context.event_bus.publish(
                 context.thread_id, {"event": "agent", "data": data}
             )
+
+
+# ── module-level helpers ─────────────────────────────────────
+
+def repositories(raw) -> List[Source]:
+    """Coerce a list of raw Source dicts into Source models."""
+    return [item if isinstance(item, Source) else Source(**item) for item in raw or []]
+
+
+def _as_source(raw) -> "Source":
+    """Coerce a single raw Source dict into a Source model (or None)."""
+    if not raw:
+        return None
+    return raw if isinstance(raw, Source) else Source(**raw)
+
+
+def _asset_name(source) -> str:
+    """Name of an asset within its destination dir (basename of path, else repo name)."""
+    if source.path:
+        return os.path.basename(source.path.rstrip("/")) or repo_name(source.repo)
+    return repo_name(source.repo)
+
+
+def _copy_file(path: str, dest_dir: str) -> None:
+    import shutil
+
+    os.makedirs(dest_dir, exist_ok=True)
+    shutil.copy2(path, os.path.join(dest_dir, os.path.basename(path)))

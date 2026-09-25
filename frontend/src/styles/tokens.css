@@ -1,0 +1,173 @@
+/* ============================================================================
+   Agent Orchestrator — Design Tokens
+   ----------------------------------------------------------------------------
+   The single source of truth for every visual decision. Nothing downstream
+   should hard-code a color, size, radius, or duration — it resolves here.
+
+   Aesthetic: modern, refined developer tool. Near-black cool surfaces, hairline
+   borders, a restrained indigo accent, mono-set labels, precise motion.
+   ============================================================================ */
+
+:root {
+  /* ------------------------------------------------------------------ Surfaces */
+  --canvas: #08090b;
+  --surface: #0e1014;
+  --surface-2: #14171d;
+  --surface-3: #1b1f27;
+  --surface-overlay: rgba(8, 9, 11, 0.72);
+
+  /* --------------------------------------------------------------------- Lines */
+  --line-faint: rgba(255, 255, 255, 0.04);
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.12);
+  --line-accent: rgba(99, 102, 241, 0.38);
+
+  /* ---------------------------------------------------------------------- Text */
+  --text: #e7e9ed;
+  --text-2: #a3aab6;
+  --text-3: #6c7480;
+  --text-inverse: #08090b;
+
+  /* -------------------------------------------------------------------- Accent */
+  --accent: #6366f1;
+  --accent-hover: #7c7ff5;
+  --accent-press: #4f46e5;
+  --accent-soft: rgba(99, 102, 241, 0.12);
+  --accent-soft-strong: rgba(99, 102, 241, 0.18);
+  --accent-fg: #c7d2fe;
+  --accent-glow: rgba(99, 102, 241, 0.3);
+
+  /* ------------------------------------------------------------------ Semantic */
+  --success: #34d399;
+  --success-soft: rgba(52, 211, 153, 0.12);
+  --success-line: rgba(52, 211, 153, 0.35);
+
+  --warning: #fbbf24;
+  --warning-soft: rgba(251, 191, 36, 0.12);
+  --warning-line: rgba(251, 191, 36, 0.35);
+
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.12);
+  --danger-line: rgba(248, 113, 113, 0.35);
+
+  --info: #38bdf8;
+  --info-soft: rgba(56, 189, 248, 0.12);
+  --info-line: rgba(56, 189, 248, 0.35);
+
+  /* --------------------------------------------------- Execution kinds (domain) */
+  /* Maps the product's executor `runtime_kind` values to a stable color.        */
+  --kind-cli: #34d399;
+  --kind-cloud: #38bdf8;
+  --kind-mcp: #a78bfa;
+  --kind-script: #fbbf24;
+  --kind-git: #fb923c;
+  --kind-none: #94a3b8;
+
+  /* ---------------------------------------------------------------- Typography */
+  --font-sans: var(--font-geist-sans), -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, 'SF Mono', 'Fira Code',
+    'JetBrains Mono', Menlo, monospace;
+
+  --text-2xs: 0.6875rem; /* 11 */
+  --text-xs: 0.75rem; /* 12 */
+  --text-sm: 0.8125rem; /* 13 */
+  --text-base: 0.875rem; /* 14 */
+  --text-md: 1rem; /* 16 */
+  --text-lg: 1.125rem; /* 18 */
+  --text-xl: 1.375rem; /* 22 */
+  --text-2xl: 1.75rem; /* 28 */
+  --text-3xl: 2.25rem; /* 36 */
+  --text-4xl: 3rem; /* 48 */
+  --text-5xl: 3.75rem; /* 60 */
+
+  --leading-tight: 1.15;
+  --leading-snug: 1.35;
+  --leading-normal: 1.55;
+  --leading-relaxed: 1.7;
+
+  --tracking-tighter: -0.03em;
+  --tracking-tight: -0.015em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.06em;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* --------------------------------------------------------------------- Space */
+  /* 4px base. */
+  --space-px: 1px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+  --space-32: 128px;
+
+  /* -------------------------------------------------------------------- Radius */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-full: 999px;
+
+  /* ----------------------------------------------------------------- Elevation */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --glow-accent: 0 0 24px var(--accent-glow);
+
+  /* -------------------------------------------------------------------- Motion */
+  --dur-1: 120ms;
+  --dur-2: 180ms;
+  --dur-3: 260ms;
+  --dur-4: 420ms;
+  /* Long, symmetric fades for state highlights that must never snap.
+     Uses a gentle ease-in-out, NOT an ease-out: front-loaded curves reach
+     most of their change almost immediately and read as a jump. */
+  --dur-fade: 760ms;
+  --ease-fade: cubic-bezier(0.45, 0, 0.25, 1);
+  /* Lets the outgoing highlight release before the incoming one lights up. */
+  --fade-delay: 140ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* -------------------------------------------------------------------- Layout */
+  --container: 1120px;
+  --container-wide: 1280px;
+  --nav-h: 56px;
+
+  /* ------------------------------------------------------------------ Z-layers */
+  --z-base: 0;
+  --z-nav: 100;
+  --z-popover: 200;
+  --z-modal: 300;
+
+  /* ------------------------------------------------------- Back-compat aliases */
+  /* Legacy names still referenced by remaining inline styles / older markup.    */
+  --background: var(--canvas);
+  --foreground: var(--text);
+  --muted: var(--text-3);
+  --muted-light: var(--text-2);
+  --surface-elevated: var(--surface-2);
+  --border: var(--line);
+  --border-active: var(--accent);
+  --success-bg: var(--success-soft);
+  --danger-bg: var(--danger-soft);
+  --warning-bg: var(--warning-soft);
+  --info-bg: var(--info-soft);
+  --transition: var(--dur-2) var(--ease);
+}

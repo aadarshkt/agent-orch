@@ -60,10 +60,12 @@ agents:
     type: cli_agent
     runtime: claude-cli
     inputs:
-      repo_urls: ["https://gitlab.eco/eco/app.git"]
-      branch: "feature/ecocharge"
-      prompt_url: "https://gitlab.eco/eco/skills/-/raw/main/prompt.md"
-      skill_urls: ["https://gitlab.eco/eco/skills/-/raw/main/review.md"]
+      repos:
+        - { repo: "https://gitlab.eco/eco/app.git", ref: "feature/ecocharge", path: "" }
+      skills:
+        - { repo: "https://gitlab.eco/eco/skills.git", ref: "main", path: "review.md" }
+      prompt:
+        { repo: "https://gitlab.eco/eco/skills.git", ref: "main", path: "prompt.md" }
       env: { EXTRA_FLAG: "1" }
       timeout: 300
 

@@ -44,6 +44,7 @@ def list_runtimes() -> List[dict]:
             "command": rt.command,
             "endpoint": rt.endpoint,
             "model": rt.model,
+            "required_env": rt.required_env,
             "timeout": rt.timeout,
         }
         for rt in _RUNTIMES.values()

@@ -30,15 +30,6 @@ interface WorkflowEdge {
   condition: string | null;
 }
 
-const ICON_MAP: Record<string, string> = {
-  cloud: '☁',
-  plug: '⚡',
-  'clipboard-check': '📋',
-  globe: '🌐',
-  terminal: '⌨',
-  clock: '⏱',
-};
-
 export default function NewWorkflowPage() {
   const router = useRouter();
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -88,19 +79,19 @@ export default function NewWorkflowPage() {
 
   function getConditionInfo(condition: string | null) {
     if (!condition || !condition.trim()) {
-      return { type: 'always', label: 'Always', icon: '⚡', className: 'cond-always' };
+      return { type: 'always', label: 'Always', className: 'cond-always' };
     }
     const cond = condition.trim().toLowerCase();
     if (cond === 'success' || cond === 'completed') {
-      return { type: 'success', label: 'On Success', icon: '✓', className: 'cond-success' };
+      return { type: 'success', label: 'On success', className: 'cond-success' };
     }
     if (cond === 'failed' || cond === 'failure' || cond === 'error') {
-      return { type: 'failed', label: 'On Failure', icon: '✗', className: 'cond-failed' };
+      return { type: 'failed', label: 'On failure', className: 'cond-failed' };
     }
     if (cond === 'approved') {
-      return { type: 'approved', label: 'When Approved', icon: '🛡', className: 'cond-approved' };
+      return { type: 'approved', label: 'When approved', className: 'cond-approved' };
     }
-    return { type: 'custom', label: condition, icon: '⚙', className: 'cond-custom' };
+    return { type: 'custom', label: condition, className: 'cond-custom' };
   }
 
   async function fetchData() {
@@ -175,7 +166,7 @@ export default function NewWorkflowPage() {
         throw new Error(data.detail || 'Failed to create workflow');
       }
       setSaveSuccess(true);
-      setTimeout(() => router.push('/'), 1500);
+      setTimeout(() => router.push('/dashboard'), 1500);
     } catch (e: any) {
       setSaveError(e.message);
     } finally {
@@ -228,7 +219,7 @@ export default function NewWorkflowPage() {
           {agents.length === 0 ? (
             <p className="text-muted text-sm">
               No agents registered.{' '}
-              <a href="/agents" className="link">Create one →</a>
+              <a href="/agents" className="link">Create one</a>
             </p>
           ) : (
             Object.entries(agentsByType).map(([typeKey, typeAgents]) => {
@@ -236,7 +227,7 @@ export default function NewWorkflowPage() {
               return (
                 <div key={typeKey} className="palette-group">
                   <h3 className="palette-group-title">
-                    {ICON_MAP[nt?.icon || ''] || '●'} {nt?.display_name || typeKey}
+                    {nt?.display_name || typeKey}
                   </h3>
                   {typeAgents.map((agent) => (
                     <button
@@ -246,7 +237,7 @@ export default function NewWorkflowPage() {
                       title={agent.description || agent.name}
                     >
                       <span className="palette-agent-name">{agent.name}</span>
-                      <span className="palette-add-icon">+</span>
+                      <span className="palette-add">Add</span>
                     </button>
                   ))}
                 </div>
@@ -300,8 +291,7 @@ export default function NewWorkflowPage() {
 
             {/* Nodes + Edges */}
             {nodes.length === 0 ? (
-              <div className="empty-state" style={{ padding: '3rem' }}>
-                <p className="empty-state-icon">⊞</p>
+              <div className="empty-state">
                 <h3>No steps added yet</h3>
                 <p className="text-muted">
                   Click an agent in the palette to add it as a workflow step.
@@ -322,9 +312,6 @@ export default function NewWorkflowPage() {
                           <div className="workflow-node-info">
                             <span className="workflow-node-step">
                               Step {idx + 1}
-                            </span>
-                            <span className="workflow-node-icon">
-                              {ICON_MAP[nt?.icon || ''] || '●'}
                             </span>
                             <div>
                               <h3 className="workflow-node-name">
@@ -354,26 +341,23 @@ export default function NewWorkflowPage() {
                               className="btn-icon"
                               onClick={() => moveNode(idx, 'up')}
                               disabled={idx === 0}
-                              title="Move up"
                             >
-                              ↑
+                              Up
                             </button>
                             <button
                               type="button"
                               className="btn-icon"
                               onClick={() => moveNode(idx, 'down')}
                               disabled={idx === nodes.length - 1}
-                              title="Move down"
                             >
-                              ↓
+                              Down
                             </button>
                             <button
                               type="button"
                               className="btn-icon btn-icon-danger"
                               onClick={() => removeNode(idx)}
-                              title="Remove"
                             >
-                              ✕
+                              Remove
                             </button>
                           </div>
                         </div>
@@ -403,11 +387,9 @@ export default function NewWorkflowPage() {
                                 type="button"
                                 className={`workflow-edge-condition-btn ${condInfo.className}`}
                                 onClick={() => setOpenConditionIdx(isOpen ? null : idx)}
-                                title="Click to choose transition condition"
                               >
-                                <span className="cond-icon">{condInfo.icon}</span>
+                                <span className="cond-dot" />
                                 <span>{condInfo.label}</span>
-                                <span className="cond-chevron">{isOpen ? '▲' : '▼'}</span>
                               </button>
 
                               {isOpen && (
@@ -417,10 +399,10 @@ export default function NewWorkflowPage() {
                                     <button
                                       type="button"
                                       className="btn-icon"
-                                      style={{ width: '18px', height: '18px', fontSize: '10px' }}
+                                      style={{ height: '20px', padding: '0 6px' }}
                                       onClick={() => setOpenConditionIdx(null)}
                                     >
-                                      ✕
+                                      Close
                                     </button>
                                   </div>
                                   <div className="workflow-cond-options">
@@ -432,8 +414,10 @@ export default function NewWorkflowPage() {
                                         setOpenConditionIdx(null);
                                       }}
                                     >
-                                      <span>⚡ Always (Normal Flow)</span>
-                                      {condInfo.type === 'always' && <span>✓</span>}
+                                      <span>Always (normal flow)</span>
+                                      {condInfo.type === 'always' && (
+                                        <span className="cond-mark">Active</span>
+                                      )}
                                     </button>
 
                                     <button
@@ -444,8 +428,10 @@ export default function NewWorkflowPage() {
                                         setOpenConditionIdx(null);
                                       }}
                                     >
-                                      <span>✓ On Success</span>
-                                      {condInfo.type === 'success' && <span>✓</span>}
+                                      <span>On success</span>
+                                      {condInfo.type === 'success' && (
+                                        <span className="cond-mark">Active</span>
+                                      )}
                                     </button>
 
                                     <button
@@ -456,8 +442,10 @@ export default function NewWorkflowPage() {
                                         setOpenConditionIdx(null);
                                       }}
                                     >
-                                      <span>✗ On Failure</span>
-                                      {condInfo.type === 'failed' && <span>✓</span>}
+                                      <span>On failure</span>
+                                      {condInfo.type === 'failed' && (
+                                        <span className="cond-mark">Active</span>
+                                      )}
                                     </button>
 
                                     <button
@@ -468,8 +456,10 @@ export default function NewWorkflowPage() {
                                         setOpenConditionIdx(null);
                                       }}
                                     >
-                                      <span>🛡 When Approved</span>
-                                      {condInfo.type === 'approved' && <span>✓</span>}
+                                      <span>When approved</span>
+                                      {condInfo.type === 'approved' && (
+                                        <span className="cond-mark">Active</span>
+                                      )}
                                     </button>
                                   </div>
 

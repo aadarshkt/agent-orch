@@ -24,10 +24,31 @@ from src.registry.base_executor import ExecutionContext
 from src.registry.runtime_registry import register_runtimes, resolve_runtime
 from src.registry.executor_registry import list_executors
 
+try:
+    import jsonschema
+    HAS_JSONSCHEMA = True
+except ImportError:
+    HAS_JSONSCHEMA = False
+
 # Ensure executors are registered on import
 import src.executors  # noqa: F401
 
 router = APIRouter()
+
+
+def _validate_agent_inputs(agent_name: str, executor_meta: dict, params: dict) -> None:
+    """Validate an agent's params against its executor's input_schema."""
+    schema = executor_meta.get("input_schema")
+    if not schema or not HAS_JSONSCHEMA:
+        return
+    try:
+        jsonschema.validate(instance=params, schema=schema)
+    except jsonschema.ValidationError as e:
+        loc = ".".join(str(p) for p in e.absolute_path) or "(root)"
+        raise HTTPException(
+            status_code=422,
+            detail=f"Agent '{agent_name}': {e.message} (at {loc})",
+        )
 
 
 # ──────────────────────────────────────────────
@@ -119,8 +140,9 @@ def _import_workflow_spec(spec: WorkflowSpec, db: Session) -> WorkflowModel:
     # 1. Register embedded runtimes into the in-memory registry
     register_runtimes(spec.runtimes)
 
-    # 2. Validate agent type + runtime references
-    valid_executors = {e["key"] for e in list_executors()}
+    # 2. Validate agent type + runtime references + inputs
+    executors_by_key = {e["key"]: e for e in list_executors()}
+    valid_executors = set(executors_by_key)
     for agent_name, agent_def in spec.agents.items():
         if agent_def.type not in valid_executors:
             raise HTTPException(
@@ -133,6 +155,11 @@ def _import_workflow_spec(spec: WorkflowSpec, db: Session) -> WorkflowModel:
                 resolve_runtime(agent_def.runtime)
             except ValueError as e:
                 raise HTTPException(status_code=422, detail=f"Agent '{agent_name}': {e}")
+
+        params = dict(agent_def.inputs)
+        if agent_def.runtime:
+            params["runtime"] = agent_def.runtime
+        _validate_agent_inputs(agent_name, executors_by_key[agent_def.type], params)
 
     # 3. Validate node -> agent references
     node_ids = {n.id for n in spec.workflow.nodes}

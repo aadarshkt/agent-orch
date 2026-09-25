@@ -70,7 +70,7 @@ function renderField(
   onChange: (name: string, val: any) => void,
   disabled: boolean
 ) {
-  // Enum → dropdown
+  // Enum -> dropdown
   if (prop.enum) {
     return (
       <select
@@ -136,7 +136,7 @@ function renderField(
     );
   }
 
-  // Boolean → toggle
+  // Boolean -> toggle
   if (prop.type === 'boolean') {
     return (
       <label className="form-toggle-wrapper">
@@ -152,12 +152,12 @@ function renderField(
     );
   }
 
-  // Array of strings → multi-input
+  // Array of strings -> multi-input
   if (prop.type === 'array' && prop.items?.type === 'string') {
     return <ArrayStringField value={value} onChange={(val) => onChange(fieldName, val)} disabled={disabled} placeholder={prop.items?.format === 'uri' ? 'https://...' : ''} />;
   }
 
-  // Object with additionalProperties → key-value editor
+  // Object with additionalProperties -> key-value editor
   if (prop.type === 'object' && prop.additionalProperties) {
     return <KeyValueField value={value} onChange={(val) => onChange(fieldName, val)} disabled={disabled} />;
   }
@@ -251,7 +251,7 @@ function ArrayStringField({
             onClick={() => removeItem(idx)}
             disabled={disabled}
           >
-            ✕
+            Remove
           </button>
         </div>
       ))}
@@ -261,7 +261,7 @@ function ArrayStringField({
         onClick={addItem}
         disabled={disabled}
       >
-        + Add Item
+        Add item
       </button>
     </div>
   );
@@ -325,7 +325,7 @@ function KeyValueField({
             onClick={() => removePair(k)}
             disabled={disabled}
           >
-            ✕
+            Remove
           </button>
         </div>
       ))}
@@ -335,7 +335,7 @@ function KeyValueField({
         onClick={addPair}
         disabled={disabled}
       >
-        + Add Header
+        Add header
       </button>
     </div>
   );

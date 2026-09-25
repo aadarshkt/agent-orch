@@ -17,7 +17,7 @@ Four distinct concepts, each with a single responsibility:
 | Concept | What it is | Lives in | Created by |
 |---|---|---|---|
 | Executor (type) | Python class that runs one kind of work | code (`@register_executor`) | developer |
-| Runtime | Named environment preset (image, binary, endpoint, skills, packages) | YAML `runtimes:` | data |
+| Runtime | Named environment preset (image, command, endpoint, env) | YAML `runtimes:` | data |
 | Agent (instance) | A concrete node = type + runtime + inputs | YAML `agents:` or UI | data |
 | Workflow | Graph of agent references (nodes + edges) | YAML `workflow:` or UI | data |
 
@@ -123,8 +123,8 @@ fields; `title`/`description` become the form label/help text.
 
 `runtime_kind` declares what environment the executor needs. Values:
 
-- `cli` - runs a local binary/container. Resolves to `image`, `command`,
-  `skills`, `packages`, `env`.
+- `cli` - runs a container. Resolves to `image`, `command`, `env`,
+  `required_env`, `resource_limits`, `timeout`.
 - `cloud` - calls a remote API. Resolves to `endpoint`, `model`, `env`.
 - `mcp` - connects to an MCP server. Resolves to `server` connection details.
 - `none` - self-contained (like `script_runner`). No runtime required.
@@ -138,6 +138,45 @@ runtime = resolve_runtime(node_config["runtime"])  # look up runtimes:<name>
 `resolve_runtime` merges the agent's `inputs.env` over the runtime's base `env`,
 so per-run secrets/overrides layer on top of the preset without baking them
 into the image.
+
+### CLI agent inputs: one `Source` type
+
+Every CLI agent input that points at something is the same type:
+
+```
+Source { repo, ref, path }    # ref = branch | tag | sha; path "" = whole repo
+```
+
+Four fields, one shape each, one destination each:
+
+| Field | Materialized to |
+|---|---|
+| `repos` | `/workspace/repos/<name>` (mounted, editable; commit targets) |
+| `skills` | `/workspace/.agent/skills/<name>` |
+| `context` | `/workspace/.agent/context/<name>` |
+| `prompt` | `/workspace/.agent/prompt.md` |
+
+There is no other way to provide these - no raw URLs, no inline prompt, no path
+conventions. The executor resolves each Source (checking the repo out at `ref`
+into a per-run cache) and tells the container where everything is via env:
+
+```
+AGENT_WORKSPACE     /workspace
+AGENT_REPOS_DIR     /workspace/repos
+AGENT_SKILLS_DIR    /workspace/.agent/skills
+AGENT_CONTEXT_DIR   /workspace/.agent/context
+AGENT_PROMPT_FILE   /workspace/.agent/prompt.md
+```
+
+Secrets and overrides are merged (runtime `env` under agent `env`, `${VAR}`
+interpolated from `backend/.env`) and passed through a mounted env-file
+(`--env-file`), never `-e`. A runtime can declare `required_env`; those vars are
+forwarded from the backend environment (`backend/.env`) into the env-file, and a
+missing one fails the node fast.
+
+Downstream nodes receive upstream outputs automatically: each node records the
+files matched by its `artifacts` globs, and the next node mounts them under
+`.agent/context/upstream/<node>/`. That is the single handoff mechanism.
 
 ## 6. Complete onboarding procedure
 
@@ -321,8 +360,8 @@ relationship visible in YAML.
 
 ## 13. Packaging a CLI agent image
 
-One image per agent. The image holds the static runtime (binary, language
-runtime, packages, bundled skills); dynamic inputs (repo, branch, prompt, env)
+One image per agent. The image holds the static runtime (CLI binary, toolchain,
+packages, bundled skills); dynamic inputs (repo, skills, context, prompt, env)
 are injected at execution.
 
 1. Author a `Dockerfile` from `backend/docker/agent.Dockerfile`, baking in the

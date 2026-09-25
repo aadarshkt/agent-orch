@@ -1,7 +1,31 @@
 # Preconfigured runtime presets. Each CLI agent references one of these by name.
-# image  -> pulled from the registry (credentials via backend/.env)
-# command-> default command; the prompt is appended by the executor
+# image   -> pulled from the registry (credentials via backend/.env)
+# command -> default command; inputs reach the container via the AGENT_* env vars
 runtimes:
+  # Beacon CLI agent image. The image bundles node + the beacon CLI + the
+  # toolchain the agent operates on, and reads its inputs from the AGENT_* env
+  # vars the cli_agent executor injects. Secrets arrive via the mounted env-file.
+  - name: beacon
+    kind: cli
+    image: ghcr.io/eco/beacon-agent:latest
+    command:
+      - sh
+      - -lc
+      - >-
+        beacon --headless --auto --stream
+        --setcluster "$BEACON_CLUSTER"
+        --setmodel "$BEACON_MODEL"
+        --prompt "$AGENT_PROMPT_FILE"
+    env:
+      BEACON_CLUSTER: "KAI-CV"
+      BEACON_MODEL: "ultra-thinking"
+    required_env:
+      - GITLAB_TOKEN
+    resource_limits:
+      cpus: "2.0"
+      memory: "4g"
+    timeout: 1800
+
   - name: claude-cli
     kind: cli
     image: ghcr.io/eco/claude-agent:latest

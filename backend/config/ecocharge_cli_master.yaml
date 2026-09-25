@@ -1,0 +1,194 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# EcoCharge CLI-only workflow — the Beacon CLI (cli_agent) subset of the CI
+# pipeline, with no cloud agents. Use this when the reasoning chain
+# (classify / CR / thinking / approval) is handled elsewhere.
+#
+# Import:  POST /workflows/import  { "yaml_path": "config/ecocharge_cli_master.yaml" }
+#
+# Every agent input is a Source { repo, ref, path } — one shape everywhere:
+#   repos   -> mounted working clones (editable, commit targets)
+#   skills  -> /workspace/.agent/skills/<name>
+#   context -> /workspace/.agent/context/<name>
+#   prompt  -> /workspace/.agent/prompt.md
+#
+# Each node declares `artifacts` globs; the executor collects the matched files
+# and auto-mounts them for the next node under
+# /workspace/.agent/context/upstream/<node>/. That is the only handoff mechanism.
+#
+# Notes:
+#  - Nodes run sequentially (single-path routing); the CI runs figma-screens and
+#    design-docs in parallel — linearized here.
+#  - The `beacon` image must implement the AGENT_* env contract
+#    (see executor_onboarding.md). The figma nodes additionally need Figma MCP.
+#  - GITLAB_TOKEN, FIGMA_ACCESS_TOKEN and GIT_REPO_URL are read from backend/.env.
+#  - All agent types here are IMPLEMENTED (cli_agent, git_commit).
+# ─────────────────────────────────────────────────────────────────────────────
+version: 1
+
+# Shared anchor for the app repo (extra top-level key; ignored by the parser).
+_common:
+  app: &app
+    repo: "https://gitlab.kpit.com/eco-charge-vw-poc/ecochargeapp.git"
+    ref: "feature/vw-poc"
+
+runtimes:
+  - name: beacon
+    kind: cli
+    image: ghcr.io/eco/beacon-agent:latest
+    command:
+      - sh
+      - -lc
+      - >-
+        beacon --headless --auto --stream
+        --setcluster "$BEACON_CLUSTER"
+        --setmodel "$BEACON_MODEL"
+        --prompt "$AGENT_PROMPT_FILE"
+    env:
+      BEACON_CLUSTER: "KAI-CV"
+      BEACON_MODEL: "ultra-thinking"
+    required_env:
+      - GITLAB_TOKEN
+    resource_limits:
+      cpus: "2.0"
+      memory: "4g"
+    timeout: 1800
+
+agents:
+  # CI job `ai-code-review` — reviews the MR diff, writes ai_review/ reports.
+  code_review:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/CodeReviewAgent"
+      prompt:
+        <<: *app
+        path: "Skills/CodeReviewAgent/CodeReviewAgent.md"
+      artifacts: ["ai_review/**/*.md", "ai_review/**/*.json"]
+      env: { BEACON_TIMEOUT: "1200" }
+      timeout: 1200
+
+  # CI job `ai-build-analysis` — consumes the build log.
+  build_analysis:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/Android Build Agent Skills"
+      prompt:
+        <<: *app
+        path: "Skills/Android Build Agent Skills/analyze-and-report-build-errors-SKILL.md"
+      artifacts: ["ai_analysis/**/*.md", "errors.jsonl", "build.log"]
+      timeout: 1800
+    # NOTE: the build.log must come from an upstream node or explicit `context`.
+
+  # CI job `ai-figma-screens` — needs Figma MCP inside the image.
+  figma_screens:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/FigmaDesignToScreen"
+      prompt:
+        <<: *app
+        path: "Skills/FigmaDesignToScreen/prompt/FIGMA_DESIGN_TO_SCREEN_PROMPT.md"
+      artifacts: ["ai_analysis/figma_screen_brief.json", "ai_analysis/figma_build_report.md"]
+      env:
+        FIGMA_URL: "${FIGMA_URL}"
+        FIGMA_ACCESS_TOKEN: "${FIGMA_ACCESS_TOKEN}"
+      timeout: 1800
+
+  # CI job `ai-design-docs` — ASPICE SRS/HLD/LLD updates.
+  design_docs:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/design-doc-agent"
+      prompt:
+        <<: *app
+        path: "Skills/design-doc-agent/SKILL.md"
+      artifacts: ["docs/design/**/*.md", "ai_analysis/design_docs_*.md"]
+      timeout: 1800
+
+  # CI job `ai-figma-to-code` — applies design changes to the mounted repo.
+  figma_to_code:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/FigmaToCodeAgent"
+      prompt:
+        <<: *app
+        path: "Skills/FigmaToCodeAgent/prompt/FIGMA_CHANGE_TO_CODE_PROMPT.md"
+      artifacts: ["ai_analysis/figma_to_code_*.md", "ai_analysis/figma_change_manifest.json"]
+      env:
+        GIT_REPO_URL: "${GIT_REPO_URL}"
+        BASE_BRANCH: "feature/vw-poc"
+      timeout: 1800
+
+  # CI job `ai-test-generation` — compilable JVM unit tests + traceability.
+  test_gen:
+    type: cli_agent
+    runtime: beacon
+    inputs:
+      repos:
+        - <<: *app
+          path: ""
+      skills:
+        - <<: *app
+          path: "Skills/UTAgent"
+      prompt:
+        <<: *app
+        path: "Skills/UTAgent/AGENT.md"
+      artifacts: ["ai_tests/**/*.kt", "ai_tests/**/*.json"]
+      timeout: 1500
+
+  # Push the changes figma_to_code made in the workspace (host-side git).
+  committer:
+    type: git_commit
+    inputs:
+      source_node_id: figma_to_code
+      repo: ecochargeapp
+      commit_message: "feat(ui): EcoCharge Figma design-to-code changes"
+      branch: "feature/vw-poc"
+
+workflow:
+  name: "EcoCharge CLI Pipeline"
+  description: "Beacon CLI agents only: review -> build analysis -> design -> code -> tests -> commit."
+  hitl_enabled: true
+  nodes:
+    - { id: code_review, agent: code_review, requires_approval: false }
+    - { id: build_analysis, agent: build_analysis, requires_approval: false }
+    - { id: figma_screens, agent: figma_screens, requires_approval: false }
+    - { id: design_docs, agent: design_docs, requires_approval: false }
+    - { id: figma_to_code, agent: figma_to_code, requires_approval: true }
+    - { id: test_gen, agent: test_gen, requires_approval: false }
+    - { id: commit, agent: committer, requires_approval: true }
+  edges:
+    - { from: code_review, to: build_analysis, condition: success }
+    - { from: build_analysis, to: figma_screens, condition: success }
+    - { from: figma_screens, to: design_docs, condition: success }
+    - { from: design_docs, to: figma_to_code, condition: success }
+    - { from: figma_to_code, to: test_gen, condition: success }
+    - { from: test_gen, to: commit, condition: success }

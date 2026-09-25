@@ -25,15 +25,6 @@ interface Agent {
   updated_at?: string;
 }
 
-const ICON_MAP: Record<string, string> = {
-  cloud: '☁',
-  plug: '⚡',
-  'clipboard-check': '📋',
-  globe: '🌐',
-  terminal: '⌨',
-  clock: '⏱',
-};
-
 export default function AgentsPage() {
   const [nodeTypes, setNodeTypes] = useState<NodeType[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -166,7 +157,7 @@ export default function AgentsPage() {
           className="btn btn-glow"
           onClick={() => setShowCreateForm(!showCreateForm)}
         >
-          {showCreateForm ? '✕ Cancel' : '+ Create Agent'}
+          {showCreateForm ? 'Cancel' : 'Create Agent'}
         </button>
       </div>
 
@@ -179,7 +170,7 @@ export default function AgentsPage() {
           <form onSubmit={handleCreateAgent}>
             {/* Step 1: Pick Node Type */}
             <div className="form-section">
-              <h3 className="form-section-title">① Select Node Type</h3>
+              <h3 className="form-section-title">1. Select node type</h3>
               <div className="node-type-grid">
                 {nodeTypes.map((nt) => (
                   <button
@@ -188,9 +179,7 @@ export default function AgentsPage() {
                     className={`node-type-card ${selectedTypeKey === nt.type_key ? 'node-type-card-selected' : ''}`}
                     onClick={() => selectNodeType(nt.type_key)}
                   >
-                    <span className="node-type-icon">
-                      {ICON_MAP[nt.icon] || '●'}
-                    </span>
+                    <span className="tag tag--accent">{nt.executor_key}</span>
                     <span className="node-type-name">{nt.display_name}</span>
                     <span className="node-type-desc">{nt.description}</span>
                   </button>
@@ -201,7 +190,7 @@ export default function AgentsPage() {
             {/* Step 2: Configure Agent */}
             {selectedNodeType && (
               <div className="form-section">
-                <h3 className="form-section-title">② Configure Agent</h3>
+                <h3 className="form-section-title">2. Configure agent</h3>
                 <div className="form-field">
                   <label className="form-label">
                     Agent Name <span className="form-required">*</span>
@@ -260,7 +249,6 @@ export default function AgentsPage() {
       {/* ───── Registered Agents ───── */}
       {agents.length === 0 ? (
         <div className="empty-state">
-          <p className="empty-state-icon">⬡</p>
           <h3>No agents yet</h3>
           <p className="text-muted">
             Create your first agent to start building workflows.
@@ -272,9 +260,6 @@ export default function AgentsPage() {
           return (
             <div key={typeKey} className="agent-type-group">
               <h2 className="agent-type-group-title">
-                <span className="agent-type-group-icon">
-                  {ICON_MAP[nt?.icon || ''] || '●'}
-                </span>
                 {nt?.display_name || typeKey}
                 <span className="agent-type-group-count">
                   {typeAgents.length}
@@ -337,11 +322,11 @@ function AgentCard({
           <span className="badge badge-type">{nodeType?.display_name || agent.node_type_key}</span>
         </div>
         <div className="agent-card-actions">
-          <button className="btn-icon" onClick={onToggleEdit} title="Toggle details">
-            {isEditing ? '▲' : '▼'}
+          <button className="btn-icon" onClick={onToggleEdit}>
+            {isEditing ? 'Hide' : 'Details'}
           </button>
-          <button className="btn-icon btn-icon-danger" onClick={onDelete} title="Delete agent">
-            ✕
+          <button className="btn-icon btn-icon-danger" onClick={onDelete}>
+            Delete
           </button>
         </div>
       </div>
