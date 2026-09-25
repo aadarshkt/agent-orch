@@ -33,7 +33,7 @@ agents:
   committer:
     type: git_commit
     inputs:
-      source_node_id: coding
+      source_nodes: [coding]
       # repo: app    # only needed when the node declares multiple repos
 
 workflow:

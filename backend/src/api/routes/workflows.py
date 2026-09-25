@@ -170,17 +170,17 @@ def _import_workflow_spec(spec: WorkflowSpec, db: Session) -> WorkflowModel:
                 detail=f"Node '{node.id}' references unknown agent '{node.agent}'.",
             )
 
-    # 4. Validate git_commit source_node_id references a real node
+    # 4. Validate git_commit source_nodes reference real nodes
     for node in spec.workflow.nodes:
         agent_def = spec.agents[node.agent]
         if agent_def.type == "git_commit":
-            src = agent_def.inputs.get("source_node_id")
-            if src and src not in node_ids:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Agent '{node.agent}': source_node_id '{src}' "
-                           f"not found in workflow nodes.",
-                )
+            for src in agent_def.inputs.get("source_nodes") or []:
+                if src not in node_ids:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Agent '{node.agent}': source_nodes entry '{src}' "
+                               f"not found in workflow nodes.",
+                    )
 
     # 5. Upsert agents
     agents_by_name: Dict[str, AgentModel] = {}
@@ -475,6 +475,33 @@ def _update_execution_status(
         db_session.close()
 
 
+def _summarize_run_state(
+    config: WorkflowConfig,
+    values: Dict[str, Any],
+    next_steps=(),
+) -> Dict[str, Any]:
+    """Flatten a checkpointer snapshot into per-node outputs/artifacts."""
+    values = values or {}
+    artifacts = values.get("artifacts") or {}
+    nodes: Dict[str, Any] = {}
+    for node in config.nodes:
+        node_id = node.id
+        nodes[node_id] = {
+            "output": artifacts.get(f"{node_id}_output"),
+            "artifacts": artifacts.get(f"{node_id}_artifacts") or [],
+            "exit_code": artifacts.get(f"{node_id}_exit_code"),
+            "commit": artifacts.get(f"{node_id}_commit"),
+            "commit_url": artifacts.get(f"{node_id}_commit_url"),
+            "workspace": artifacts.get(f"{node_id}_workspace"),
+        }
+    return {
+        "graph_status": values.get("status"),
+        "approval_status": values.get("approval_status"),
+        "next": list(next_steps or []),
+        "nodes": nodes,
+    }
+
+
 def run_workflow_sync(
     thread_id: str,
     workflow_id: str,
@@ -690,6 +717,53 @@ async def get_workflow_status(
         "created_at": execution.created_at.isoformat() if execution.created_at else None,
         "updated_at": execution.updated_at.isoformat() if execution.updated_at else None,
         "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
+    }
+
+
+@router.get("/{thread_id}/state")
+async def get_workflow_state(
+    thread_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Persisted per-node outputs/artifacts for a run, read from the checkpointer."""
+    execution = (
+        db.query(WorkflowExecutionModel)
+        .filter(WorkflowExecutionModel.thread_id == thread_id)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Execution for thread '{thread_id}' not found.",
+        )
+
+    config, agents_map, node_types_map = _resolve_workflow(execution.workflow_id, db)
+    checkpointer = request.app.state.checkpointer
+    context = ExecutionContext(
+        thread_id=thread_id,
+        event_bus=event_bus,
+        checkpointer=checkpointer,
+    )
+    graph = compile_workflow(config, agents_map, node_types_map, context, checkpointer)
+
+    try:
+        snapshot = graph.get_state({"configurable": {"thread_id": thread_id}})
+        values = snapshot.values or {}
+        next_steps = snapshot.next or ()
+    except Exception:
+        # Unknown/expired thread, or an in-memory checkpointer after a restart.
+        values, next_steps = {}, ()
+
+    return {
+        "thread_id": execution.thread_id,
+        "workflow_id": execution.workflow_id,
+        "status": execution.status,
+        "current_step": execution.current_step,
+        "error": execution.error,
+        "created_at": execution.created_at.isoformat() if execution.created_at else None,
+        "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
+        **_summarize_run_state(config, values, next_steps),
     }
 
 

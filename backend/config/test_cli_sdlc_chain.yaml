@@ -1,0 +1,123 @@
+# Mini SDLC chain: requirement analysis -> code -> unit tests -> code review,
+# each a real LLM stage, then the whole change is published to GitHub.
+#
+# Every stage writes its own file and declares it as an artifact, so downstream
+# nodes receive everything produced before it under
+# .agent/context/upstream/<node>/ (that is the only handoff mechanism):
+#
+#   requirements -> ai_review/requirements.md
+#   code         -> todo.py            (implementation)
+#   tests        -> test_todo.py       (pytest unit tests)
+#   review       -> ai_review/review.md
+#   publish      -> one GitHub commit of all four stages + commit URL
+#
+# The `publish` node uses `source_nodes` to bundle several stages' artifacts in
+# one commit, and `github_repo` to create/push the repo (public if missing).
+# Requires GITHUB_TOKEN in backend/.env.
+#
+# Uses the `openrouter-agent` runtime preset from config/runtimes.yaml; the key
+# comes from backend/.env (OPENROUTER_API_KEY). Build the image once with:
+#   docker build -t agent-orch-openrouter:latest backend/docker/openrouter-agent
+#
+# Import + run:
+#   curl -s localhost:8010/workflows/import \
+#     -H 'content-type: application/json' \
+#     -d '{"yaml_path": "config/test_cli_sdlc_chain.yaml"}'
+#   curl -s -X POST localhost:8010/workflows/<id>/execute
+#   curl -s localhost:8010/workflows/<thread_id>/status
+#   curl -s localhost:8010/workflows/<thread_id>/state   # outputs + commit URL
+#
+# Free models pool together and get rate-limited; the agent retries on HTTP 429.
+# The model comes from the `openrouter-agent` preset (runtimes.yaml). Override it
+# per stage with OPENROUTER_MODEL if you want a different one (see runtimes.yaml
+# for the currently reachable ids).
+version: 1
+
+agents:
+  # 1. Requirement analysis.
+  requirements:
+    type: cli_agent
+    runtime: openrouter-agent
+    inputs:
+      artifacts: ["ai_review/requirements.md"]
+      env:
+        OPENROUTER_OUTPUT: "ai_review/requirements.md"
+        OPENROUTER_PROMPT: >-
+          You are a requirements analyst. Write a concise markdown requirements
+          document for a small Python library: an in-memory to-do list with
+          add_task(title), complete_task(task_id), remove_task(task_id) and
+          list_tasks(), raising ValueError for an empty title or an unknown id.
+          Include: goal, 4-6 numbered functional requirements, the public API with
+          signatures, and the edge cases to handle. Output markdown only.
+
+  # 2. Code writing - a real source file, not prose.
+  code:
+    type: cli_agent
+    runtime: openrouter-agent
+    inputs:
+      artifacts: ["todo.py"]
+      env:
+        OPENROUTER_OUTPUT: "todo.py"
+        OPENROUTER_MAX_TOKENS: "4096"
+        OPENROUTER_PROMPT: >-
+          You are a Python implementer. Using the upstream requirements document,
+          write the complete implementation of the to-do list module.
+          Use only the standard library, with type hints and docstrings.
+          Output ONLY Python source code - no markdown fences, no prose.
+
+  # 3. Unit testing writing.
+  tests:
+    type: cli_agent
+    runtime: openrouter-agent
+    inputs:
+      artifacts: ["test_todo.py"]
+      env:
+        OPENROUTER_OUTPUT: "test_todo.py"
+        OPENROUTER_MAX_TOKENS: "4096"
+        OPENROUTER_PROMPT: >-
+          You are a test engineer. Using the upstream requirements and the
+          implementation, write pytest unit tests for the to-do list module.
+          The module file is `todo.py` next to this test file, so import it with
+          `from todo import TodoList` (or the names actually defined).
+          Cover the happy paths and every documented edge case.
+          Output ONLY Python source code - no markdown fences, no prose.
+
+  # 4. Code review.
+  review:
+    type: cli_agent
+    runtime: openrouter-agent
+    inputs:
+      artifacts: ["ai_review/review.md"]
+      env:
+        OPENROUTER_OUTPUT: "ai_review/review.md"
+        OPENROUTER_PROMPT: >-
+          You are a senior code reviewer. Review the upstream requirements,
+          implementation and unit tests. Report requirement coverage, bugs,
+          missing edge cases and test gaps, referencing the actual code, and end
+          with a one-line verdict. Output markdown only.
+
+  # 5. Publish every stage as one reviewed commit.
+  publish:
+    type: git_commit
+    inputs:
+      source_nodes: [requirements, code, tests, review]
+      github_repo: "aadarshkt/agent-orch-sdlc"
+      visibility: public
+      branch: "main"
+      commit_message: "sdlc: requirements, implementation, unit tests and review"
+
+workflow:
+  name: "CLI SDLC Chain"
+  description: "requirement analysis -> code -> unit tests -> review, published to GitHub."
+  hitl_enabled: false
+  nodes:
+    - { id: requirements, agent: requirements }
+    - { id: code, agent: code }
+    - { id: tests, agent: tests }
+    - { id: review, agent: review }
+    - { id: publish, agent: publish }
+  edges:
+    - { from: requirements, to: code }
+    - { from: code, to: tests }
+    - { from: tests, to: review }
+    - { from: review, to: publish }

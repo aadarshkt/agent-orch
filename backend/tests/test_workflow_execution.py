@@ -281,6 +281,73 @@ class TestWorkflowExecutionAndResume(unittest.TestCase):
         self.assertGreaterEqual(len(executions), 1)
         self.assertEqual(executions[0]["thread_id"], thread_id)
 
+        # 5. Persisted run state (read from the checkpointer)
+        state_res = client.get(f"/workflows/{thread_id}/state")
+        self.assertEqual(state_res.status_code, 200)
+        state_data = state_res.json()
+        self.assertEqual(state_data["thread_id"], thread_id)
+        self.assertEqual(state_data["workflow_id"], w_id)
+        self.assertIn("step_1", state_data["nodes"])
+        self.assertIn("output", state_data["nodes"]["step_1"])
+        self.assertIn("next", state_data)
+
+        # 6. Unknown thread -> 404
+        missing_res = client.get("/workflows/does-not-exist/state")
+        self.assertEqual(missing_res.status_code, 404)
+
+
+class TestRunStateSummary(unittest.TestCase):
+    """The checkpointer snapshot flattens into per-node outputs + artifacts."""
+
+    def _config(self):
+        from src.config.schema import WorkflowConfig, NodeConfig
+
+        return WorkflowConfig(
+            name="wf",
+            nodes=[
+                NodeConfig(id="n1", agent_id="a1"),
+                NodeConfig(id="n2", agent_id="a1"),
+            ],
+            edges=[],
+        )
+
+    def test_flattens_node_artifacts(self):
+        from src.api.routes.workflows import _summarize_run_state
+
+        values = {
+            "status": "completed",
+            "approval_status": "approved",
+            "artifacts": {
+                "n1_output": "hello from n1",
+                "n1_artifacts": ["/ws/n1/ai_review/report.md"],
+                "n1_exit_code": 0,
+                "n1_workspace": "/ws/n1",
+                "n1_commit": "Pushed to o/r@main",
+                "n1_commit_url": "https://github.com/o/r/commit/abc123",
+            },
+        }
+        summary = _summarize_run_state(self._config(), values, ("n3",))
+
+        self.assertEqual(summary["graph_status"], "completed")
+        self.assertEqual(summary["approval_status"], "approved")
+        self.assertEqual(summary["next"], ["n3"])
+
+        n1 = summary["nodes"]["n1"]
+        self.assertEqual(n1["output"], "hello from n1")
+        self.assertEqual(n1["artifacts"], ["/ws/n1/ai_review/report.md"])
+        self.assertEqual(n1["exit_code"], 0)
+        self.assertEqual(n1["commit"], "Pushed to o/r@main")
+        self.assertEqual(n1["commit_url"], "https://github.com/o/r/commit/abc123")
+
+    def test_missing_node_artifacts_are_empty(self):
+        from src.api.routes.workflows import _summarize_run_state
+
+        summary = _summarize_run_state(self._config(), {}, ())
+
+        self.assertEqual(summary["next"], [])
+        self.assertIsNone(summary["nodes"]["n1"]["output"])
+        self.assertEqual(summary["nodes"]["n1"]["artifacts"], [])
+
 
 class TestEdgeKeyNormalization(unittest.TestCase):
     """Regression: imported YAML edges were stored as {'from','to'} while the

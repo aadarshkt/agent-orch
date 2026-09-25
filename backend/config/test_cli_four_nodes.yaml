@@ -17,6 +17,10 @@
 #   curl -s "localhost:8010/events/stream?thread_id=<thread_id>"
 #   curl -s localhost:8010/workflows/<thread_id>/status
 #
+# Inspect a finished run (persisted node outputs + artifact paths, survives a
+# page reload — the live SSE stream does not):
+#   curl -s localhost:8010/workflows/<thread_id>/state
+#
 # Tip: set `requires_approval: true` on n3 and `hitl_enabled: true` to see the
 # graph pause and require POST /workflows/<thread_id>/resume before n4 runs.
 version: 1
@@ -47,16 +51,32 @@ agents:
       artifacts: ["ai_review/**/*.md"]
       env: { TEST_AGENT_MESSAGE: "node 4 output" }
 
+  # Publish n4's run to GitHub so the change can be reviewed from a commit URL.
+  # Creates the repo (public) if missing. Requires GITHUB_TOKEN in backend/.env.
+  # Remove this agent and its node/edge to keep the chain CLI-only.
+  publish:
+    type: git_commit
+    inputs:
+      source_nodes: [n4]
+      github_repo: "aadarshkt/agent-orch-runs"
+      visibility: public
+      branch: "main"
+      commit_message: "test: CLI four-node chain output"
+      # publish_artifacts: true        # default: include n4's collected artifacts
+      # github_token_env: GITHUB_TOKEN # default
+
 workflow:
   name: "CLI Four Node Chain"
-  description: "n1 -> n2 -> n3 -> n4, each a cli_agent node."
+  description: "n1 -> n2 -> n3 -> n4, each a cli_agent node, then publish to GitHub."
   hitl_enabled: false
   nodes:
     - { id: n1, agent: n1 }
     - { id: n2, agent: n2 }
     - { id: n3, agent: n3 }
     - { id: n4, agent: n4 }
+    - { id: publish, agent: publish }
   edges:
     - { from: n1, to: n2 }
     - { from: n2, to: n3 }
     - { from: n3, to: n4 }
+    - { from: n4, to: publish }

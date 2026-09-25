@@ -14,9 +14,9 @@
 #
 # Swap models with OPENROUTER_MODEL (any OpenRouter id; `:free` models cost 0).
 # Free pools are shared and get saturated; the agent retries on HTTP 429.
-#   nvidia/nemotron-3.5-lightning:free  (default, 1M context, fast)
-#   cohere/north-mini-code:free         (coding)
-#   poolside/laguna-s-2.1:free          (coding agent; often rate-limited)
+#   cohere/north-mini-code:free        (default in runtimes.yaml)
+#   nvidia/nemotron-3.5-lightning:free (general, frequently rate-limited)
+#   z-ai/glm-5.2:free                  (general, frequently rate-limited)
 version: 1
 
 agents:
@@ -29,7 +29,6 @@ agents:
         OPENROUTER_PROMPT: >-
           In three short bullet points, explain what a LangGraph orchestrator
           does. End with the word DONE.
-        OPENROUTER_MODEL: "nvidia/nemotron-3.5-lightning:free"
 
 workflow:
   name: "OpenRouter CLI Agent Test"

@@ -253,7 +253,7 @@ agents:
   committer:
     type: git_commit
     inputs:
-      source_node_id: figma_to_code
+      source_nodes: [figma_to_code]
       repo: ecochargeapp
       commit_message: "feat(ui): EcoCharge Figma design-to-code changes"
       branch: "feature/vw-poc"

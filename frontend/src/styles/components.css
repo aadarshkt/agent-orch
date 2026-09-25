@@ -1216,6 +1216,132 @@
 }
 
 /* ========================================================================== */
+/*  Run outputs (persisted checkpointer state)                                */
+/* ========================================================================== */
+
+.run-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+}
+
+.run-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-2) var(--ease), color var(--dur-2) var(--ease);
+}
+
+.run-item:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.run-item-active {
+  border-color: var(--line-accent);
+  color: var(--text);
+}
+
+.run-item-time {
+  margin-left: auto;
+  flex: none;
+  color: var(--text-3);
+}
+
+.run-nodes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.run-node {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.run-node-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.run-node-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text);
+}
+
+.run-artifacts {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-artifacts li {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  word-break: break-all;
+}
+
+.run-commit {
+  display: inline-block;
+  margin-top: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  word-break: break-all;
+}
+
+.run-output {
+  margin-top: var(--space-2);
+}
+
+.run-output summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-3);
+  transition: color var(--dur-2) var(--ease);
+}
+
+.run-output summary:hover {
+  color: var(--text);
+}
+
+.run-output pre {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  max-height: 320px;
+  overflow: auto;
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ========================================================================== */
 /*  Empty state                                                               */
 /* ========================================================================== */
 

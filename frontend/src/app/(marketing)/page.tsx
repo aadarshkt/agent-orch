@@ -29,7 +29,7 @@ agents:
   committer:
     type: git_commit
     inputs:
-      source_node_id: coding
+      source_nodes: [coding]
 
 workflow:
   name: "EcoCharge CLI Pipeline"

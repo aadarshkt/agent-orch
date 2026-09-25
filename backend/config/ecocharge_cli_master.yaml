@@ -164,13 +164,17 @@ agents:
       timeout: 1500
 
   # Push the changes figma_to_code made in the workspace (host-side git).
+  # To publish to GitHub instead and get a reviewable commit URL, set
+  # `github_repo` (owner/name; created public if missing) — it also includes the
+  # node's collected artifacts. Requires GITHUB_TOKEN in backend/.env.
   committer:
     type: git_commit
     inputs:
-      source_node_id: figma_to_code
+      source_nodes: [figma_to_code]
       repo: ecochargeapp
       commit_message: "feat(ui): EcoCharge Figma design-to-code changes"
       branch: "feature/vw-poc"
+      # github_repo: "aadarshkt/agent-orch-runs"
 
 workflow:
   name: "EcoCharge CLI Pipeline"

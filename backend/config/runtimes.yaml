@@ -48,9 +48,11 @@ runtimes:
     env:
       # Any OpenRouter id; `:free` models cost 0. Override per agent.
       # Free pools are shared and get saturated, so the agent retries on 429.
-      # Code:    cohere/north-mini-code:free, poolside/laguna-s-2.1:free
+      # Check availability first — e.g. nvidia/nemotron-3.5-lightning:free and
+      # z-ai/glm-5.2:free are frequently rate-limited/queued.
+      # Code:    cohere/north-mini-code:free (default), poolside/laguna-s-2.1:free
       # General: nvidia/nemotron-3.5-lightning:free, z-ai/glm-5.2:free
-      OPENROUTER_MODEL: "nvidia/nemotron-3.5-lightning:free"
+      OPENROUTER_MODEL: "cohere/north-mini-code:free"
     required_env: [OPENROUTER_API_KEY]
     timeout: 600
 

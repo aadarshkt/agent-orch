@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # Minimal OpenRouter CLI agent. Reads the node prompt (and a short summary of
 # any mounted repos), calls OpenRouter chat completions, and writes the reply
-# to ai_review/report.md so the workflow can collect it as an artifact.
+# to OPENROUTER_OUTPUT so the workflow can collect it as an artifact.
+#
+#   OPENROUTER_OUTPUT      output path relative to the workspace
+#                          (default: ai_review/report.md)
+#   OPENROUTER_MAX_TOKENS  completion budget (default: 2048)
+#
+# Non-markdown outputs (e.g. src/app.py) have a wrapping ``` fence stripped, so
+# a "write the code" stage produces a source file rather than a fenced block.
 set -euo pipefail
 
 MODEL="${OPENROUTER_MODEL:-nvidia/nemotron-3.5-lightning:free}"
+OUTPUT="${OPENROUTER_OUTPUT:-ai_review/report.md}"
+MAX_TOKENS="${OPENROUTER_MAX_TOKENS:-2048}"
 
 PROMPT=""
 if [ -n "${AGENT_PROMPT_FILE:-}" ] && [ -f "$AGENT_PROMPT_FILE" ]; then
@@ -32,6 +41,8 @@ if [ -d "${AGENT_CONTEXT_DIR:-}/upstream" ]; then
 fi
 
 export OPENROUTER_MODEL="$MODEL"
+export OPENROUTER_OUTPUT="$OUTPUT"
+export OPENROUTER_MAX_TOKENS="$MAX_TOKENS"
 export AGENT_PROMPT="$PROMPT"
 export AGENT_CONTEXT_SUMMARY="$CONTEXT"
 export AGENT_UPSTREAM="$UPSTREAM"
@@ -60,7 +71,7 @@ if upstream.strip():
 body = json.dumps({
     "model": model,
     "messages": [{"role": "user", "content": content}],
-    "max_tokens": 2048,
+    "max_tokens": int(os.environ.get("OPENROUTER_MAX_TOKENS", "2048")),
 }).encode()
 
 RETRYABLE = {429, 500, 502, 503, 504}
@@ -96,13 +107,34 @@ if not text:
     sys.exit("OpenRouter returned empty content")
 
 usage = data.get("usage") or {}
-out_dir = os.path.join(os.environ.get("AGENT_WORKSPACE", "/workspace"), "ai_review")
-os.makedirs(out_dir, exist_ok=True)
-with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as f:
-    f.write(f"# OpenRouter agent report\n\nModel: {model}\n\n{text}\n")
+output = os.environ.get("OPENROUTER_OUTPUT", "ai_review/report.md")
+out_path = os.path.join(os.environ.get("AGENT_WORKSPACE", "/workspace"), output)
+is_markdown = output.endswith((".md", ".markdown"))
+
+
+def strip_fence(value):
+    """Drop a wrapping ``` fence so non-markdown outputs are clean source."""
+    lines = value.splitlines()
+    if lines and lines[0].lstrip().startswith("```"):
+        lines = lines[1:]
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if lines and lines[-1].strip().startswith("```"):
+            lines.pop()
+    return "\n".join(lines).rstrip() + "\n"
+
+
+if not is_markdown:
+    text = strip_fence(text)
+
+payload = f"# OpenRouter agent report\n\nModel: {model}\n\n{text}\n" if is_markdown else text
+
+os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+with open(out_path, "w", encoding="utf-8") as f:
+    f.write(payload)
 
 print(f"[openrouter-agent] model={model} cost={usage.get('cost')} tokens={usage.get('total_tokens')}")
 print(text)
 PY
 
-echo "[openrouter-agent] wrote ai_review/report.md"
+echo "[openrouter-agent] wrote $OUTPUT"
