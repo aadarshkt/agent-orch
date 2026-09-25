@@ -282,6 +282,105 @@ class TestWorkflowExecutionAndResume(unittest.TestCase):
         self.assertEqual(executions[0]["thread_id"], thread_id)
 
 
+class TestEdgeKeyNormalization(unittest.TestCase):
+    """Regression: imported YAML edges were stored as {'from','to'} while the
+    resolver read 'from_node'/'to_node'. The KeyError escaped the HTTPException
+    handler, so the run stayed 'running' forever with no error."""
+
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=self.engine)
+        self.SessionLocal = sessionmaker(bind=self.engine, autocommit=False, autoflush=False)
+        self.db = self.SessionLocal()
+        self.orig_session_local = src.db.session.SessionLocal
+        src.db.session.SessionLocal = self.SessionLocal
+
+        from src.db.models import NodeTypeModel, AgentModel
+
+        self.db.add(NodeTypeModel(
+            id=str(uuid.uuid4()), type_key="cli_agent", display_name="CLI Agent",
+            executor_key="cli_agent", config_schema={},
+            created_at=datetime.utcnow(), updated_at=datetime.utcnow(),
+        ))
+        self.db.add(AgentModel(
+            id="a1", name="edge-agent", node_type_key="cli_agent",
+            params={"runtime": "test-cli"},
+            created_at=datetime.utcnow(), updated_at=datetime.utcnow(),
+        ))
+        self.db.commit()
+
+    def tearDown(self):
+        src.db.session.SessionLocal = self.orig_session_local
+        self.db.close()
+
+    def _workflow(self, edges):
+        wf = WorkflowModel(
+            id=str(uuid.uuid4()),
+            name=f"wf-{uuid.uuid4()}",
+            description=None,
+            hitl_enabled=False,
+            nodes=[
+                {"id": "n1", "agent_id": "a1", "requires_approval": False},
+                {"id": "n2", "agent_id": "a1", "requires_approval": False},
+            ],
+            edges=edges,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        self.db.add(wf)
+        self.db.commit()
+        return wf
+
+    def test_resolve_accepts_canonical_and_legacy_edge_keys(self):
+        from src.api.routes.workflows import _resolve_workflow
+
+        shapes = [
+            [{"from_node": "n1", "to_node": "n2", "condition": None}],
+            [{"from": "n1", "to": "n2", "condition": None}],
+        ]
+        for edges in shapes:
+            wf = self._workflow(edges)
+            config, _, _ = _resolve_workflow(wf.id, self.db)
+            self.assertEqual(config.edges[0].from_node, "n1")
+            self.assertEqual(config.edges[0].to_node, "n2")
+
+    def test_import_writes_canonical_edge_keys(self):
+        from src.api.routes.workflows import _import_workflow_spec, _resolve_workflow
+        from src.config.schema import (
+            AgentDef, EdgeConfig, RuntimeConfig, WorkflowGraphSpec,
+            WorkflowNodeSpec, WorkflowSpec,
+        )
+        from src.registry.runtime_registry import register_runtimes
+
+        register_runtimes([RuntimeConfig(name="test-cli", kind="cli", image="img")])
+
+        spec = WorkflowSpec(
+            runtimes=[],
+            agents={"n1": AgentDef(type="cli_agent", runtime="test-cli", inputs={})},
+            workflow=WorkflowGraphSpec(
+                name=f"imported-{uuid.uuid4()}",
+                hitl_enabled=False,
+                nodes=[
+                    WorkflowNodeSpec(id="n1", agent="n1"),
+                    WorkflowNodeSpec(id="n2", agent="n1"),
+                ],
+                edges=[EdgeConfig(**{"from": "n1", "to": "n2"})],
+            ),
+        )
+        wf = _import_workflow_spec(spec, self.db)
+
+        self.assertEqual(wf.edges[0]["from_node"], "n1")
+        self.assertEqual(wf.edges[0]["to_node"], "n2")
+
+        config, _, _ = _resolve_workflow(wf.id, self.db)
+        self.assertEqual(config.edges[0].from_node, "n1")
+        self.assertEqual(config.edges[0].to_node, "n2")
+
+
 if __name__ == "__main__":
     unittest.main()
 

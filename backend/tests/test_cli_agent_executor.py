@@ -155,7 +155,9 @@ class TestDockerCmd(unittest.TestCase):
             resource_limits={"cpus": "2", "memory": "4g"},
         )
         self.assertIn("--env-file", cmd)
-        self.assertIn("/workspace/.agent/env", cmd)
+        # --env-file is read by the docker client on the host, so it must be
+        # the host path inside the mounted node dir (not /workspace/...).
+        self.assertIn(os.path.join("/tmp/node", ".agent", "env"), cmd)
         self.assertNotIn("-e", cmd)
         self.assertIn("--cpus", cmd)
         self.assertIn("--memory", cmd)

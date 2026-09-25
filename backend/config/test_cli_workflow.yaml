@@ -1,0 +1,43 @@
+# Self-contained smoke test for the cli_agent executor.
+#
+# Uses the `test-cli` runtime preset from config/runtimes.yaml, backed by a tiny
+# local image (see docker/test-agent) that honors the AGENT_* env contract and
+# writes ai_review/report.md. No git, no network, no API keys.
+#
+# 1. Build the image (once):
+#      docker build -t agent-orch-test-cli:latest backend/docker/test-agent
+# 2. Import (from an environment where the backend can read this path):
+#      curl -s localhost:8010/workflows/import \
+#        -H 'content-type: application/json' \
+#        -d '{"yaml_path": "config/test_cli_workflow.yaml"}'
+# 3. Execute the returned workflow id:
+#      curl -s -X POST localhost:8010/workflows/<id>/execute
+# 4. Watch events / poll status:
+#      curl -s "localhost:8010/events/stream?thread_id=<thread_id>"
+#      curl -s localhost:8010/workflows/<thread_id>/status
+version: 1
+
+agents:
+  step_one:
+    type: cli_agent
+    runtime: test-cli
+    inputs:
+      artifacts: ["ai_review/**/*.md"]
+      env:
+        TEST_AGENT_MESSAGE: "hello from step_one"
+
+  step_two:
+    type: cli_agent
+    runtime: test-cli
+    inputs:
+      artifacts: ["ai_review/**/*.md"]
+
+workflow:
+  name: "CLI Agent Smoke Test"
+  description: "Two fake CLI agent nodes; step_two receives step_one's artifacts."
+  hitl_enabled: false
+  nodes:
+    - { id: step_one, agent: step_one }
+    - { id: step_two, agent: step_two }
+  edges:
+    - { from: step_one, to: step_two }

@@ -20,7 +20,7 @@
 #    design-docs in parallel — linearized here.
 #  - The `beacon` image must implement the AGENT_* env contract
 #    (see executor_onboarding.md). The figma nodes additionally need Figma MCP.
-#  - GITLAB_TOKEN, FIGMA_ACCESS_TOKEN and GIT_REPO_URL are read from backend/.env.
+#  - FIGMA_ACCESS_TOKEN and GIT_REPO_URL are read from backend/.env.
 #  - All agent types here are IMPLEMENTED (cli_agent, git_commit).
 # ─────────────────────────────────────────────────────────────────────────────
 version: 1
@@ -46,8 +46,7 @@ runtimes:
     env:
       BEACON_CLUSTER: "KAI-CV"
       BEACON_MODEL: "ultra-thinking"
-    required_env:
-      - GITLAB_TOKEN
+    required_env: []
     resource_limits:
       cpus: "2.0"
       memory: "4g"

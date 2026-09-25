@@ -25,7 +25,7 @@ import glob as globlib
 import os
 import re
 import tempfile
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from src.registry.base_executor import BaseExecutor, ExecutionContext
 from src.registry.executor_registry import register_executor
@@ -71,6 +71,7 @@ class CliAgentExecutor(BaseExecutor):
                 "type": "string",
                 "title": "Runtime",
                 "description": "Named CLI runtime preset (from runtimes.yaml)",
+                "ui:widget": "runtime",
             },
             "repos": {
                 "type": "array",
@@ -240,6 +241,13 @@ class CliAgentExecutor(BaseExecutor):
             "AGENT_CONTEXT_DIR": "/workspace/.agent/context",
             "AGENT_PROMPT_FILE": "/workspace/.agent/prompt.md",
         }
+        # Forward required_env vars from the host environment (backend/.env) so
+        # declared-but-unset secrets actually reach the container and a missing
+        # one fails fast in _check_required_env.
+        for key in (runtime.required_env or []):
+            host_value = os.getenv(key)
+            if host_value is not None:
+                env[key] = host_value
         for key, value in {**runtime.env, **overrides}.items():
             env[key] = _interpolate(value)
         return env
@@ -284,8 +292,10 @@ class CliAgentExecutor(BaseExecutor):
         if resource_limits.get("memory"):
             cmd += ["--memory", str(resource_limits["memory"])]
         # Secrets go through a mounted env-file, never -e (which leaks to
-        # the process table and `docker inspect`).
-        cmd += ["--env-file", "/workspace/.agent/env"]
+        # the process table and `docker inspect`). Note: --env-file is read by
+        # the docker client on the *host*, so it must be the host path (the
+        # file lives inside the mounted node directory), not /workspace/...
+        cmd += ["--env-file", os.path.join(node_dir, ".agent", "env")]
         cmd += ["-v", f"{node_dir}:/workspace", "-w", "/workspace"]
         cmd.append(image)
         cmd += [str(c) for c in command]
@@ -394,7 +404,7 @@ def repositories(raw) -> List[Source]:
     return [item if isinstance(item, Source) else Source(**item) for item in raw or []]
 
 
-def _as_source(raw) -> "Source":
+def _as_source(raw) -> Optional[Source]:
     """Coerce a single raw Source dict into a Source model (or None)."""
     if not raw:
         return None

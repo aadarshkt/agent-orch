@@ -1,0 +1,62 @@
+# Four chained cli_agent nodes, to observe orchestration end to end:
+# sequential execution, per-node workspaces, artifact collection and the
+# upstream handoff (each node receives everything produced before it).
+#
+# Default uses the `test-cli` preset (fast, free, no LLM) so the SSE stream
+# shows exactly what each node receives. To use a real model instead, change
+# each agent's `runtime:` to `openrouter-agent`.
+#
+# Build the image once:
+#   docker build -t agent-orch-test-cli:latest backend/docker/test-agent
+#
+# Import + run:
+#   curl -s localhost:8010/workflows/import \
+#     -H 'content-type: application/json' \
+#     -d '{"yaml_path": "config/test_cli_four_nodes.yaml"}'
+#   curl -s -X POST localhost:8010/workflows/<id>/execute
+#   curl -s "localhost:8010/events/stream?thread_id=<thread_id>"
+#   curl -s localhost:8010/workflows/<thread_id>/status
+#
+# Tip: set `requires_approval: true` on n3 and `hitl_enabled: true` to see the
+# graph pause and require POST /workflows/<thread_id>/resume before n4 runs.
+version: 1
+
+agents:
+  n1:
+    type: cli_agent
+    runtime: test-cli
+    inputs:
+      artifacts: ["ai_review/**/*.md"]
+      env: { TEST_AGENT_MESSAGE: "node 1 output" }
+  n2:
+    type: cli_agent
+    runtime: test-cli
+    inputs:
+      artifacts: ["ai_review/**/*.md"]
+      env: { TEST_AGENT_MESSAGE: "node 2 output" }
+  n3:
+    type: cli_agent
+    runtime: test-cli
+    inputs:
+      artifacts: ["ai_review/**/*.md"]
+      env: { TEST_AGENT_MESSAGE: "node 3 output" }
+  n4:
+    type: cli_agent
+    runtime: test-cli
+    inputs:
+      artifacts: ["ai_review/**/*.md"]
+      env: { TEST_AGENT_MESSAGE: "node 4 output" }
+
+workflow:
+  name: "CLI Four Node Chain"
+  description: "n1 -> n2 -> n3 -> n4, each a cli_agent node."
+  hitl_enabled: false
+  nodes:
+    - { id: n1, agent: n1 }
+    - { id: n2, agent: n2 }
+    - { id: n3, agent: n3 }
+    - { id: n4, agent: n4 }
+  edges:
+    - { from: n1, to: n2 }
+    - { from: n2, to: n3 }
+    - { from: n3, to: n4 }

@@ -215,7 +215,7 @@ def _import_workflow_spec(spec: WorkflowSpec, db: Session) -> WorkflowModel:
     ]
 
     edges = [
-        {"from": e.from_node, "to": e.to_node, "condition": e.condition}
+        {"from_node": e.from_node, "to_node": e.to_node, "condition": e.condition}
         for e in spec.workflow.edges
     ]
 
@@ -427,7 +427,13 @@ def _resolve_workflow(workflow_id: str, db: Session):
             for n in workflow.nodes
         ],
         edges=[
-            EdgeConfig(**{"from": e["from_node"], "to": e["to_node"], "condition": e.get("condition")})
+            EdgeConfig(
+                **{
+                    "from": e.get("from_node", e.get("from")),
+                    "to": e.get("to_node", e.get("to")),
+                    "condition": e.get("condition"),
+                }
+            )
             for e in workflow.edges
         ],
     )
@@ -482,10 +488,11 @@ def run_workflow_sync(
     db = SessionLocal()
     try:
         config, agents_map, node_types_map = _resolve_workflow(workflow_id, db)
-    except HTTPException as e:
-        _update_execution_status(thread_id, status="failed", error=str(e.detail), completed=True)
+    except Exception as e:
+        detail = e.detail if isinstance(e, HTTPException) else str(e)
+        _update_execution_status(thread_id, status="failed", error=str(detail), completed=True)
         event_bus.publish_sync(
-            thread_id, {"event": "error", "data": e.detail}, loop=loop
+            thread_id, {"event": "error", "data": detail}, loop=loop
         )
         return
     finally:

@@ -19,12 +19,40 @@ runtimes:
     env:
       BEACON_CLUSTER: "KAI-CV"
       BEACON_MODEL: "ultra-thinking"
-    required_env:
-      - GITLAB_TOKEN
+    required_env: []
     resource_limits:
       cpus: "2.0"
       memory: "4g"
     timeout: 1800
+
+  # Local test agent (no git, no network, no API keys). Image source:
+  # backend/docker/test-agent. Build it with:
+  #   docker build -t agent-orch-test-cli:latest backend/docker/test-agent
+  # It honors the AGENT_* contract and writes ai_review/report.md.
+  - name: test-cli
+    kind: cli
+    image: agent-orch-test-cli:latest
+    command: ["/agent/run.sh"]
+    env:
+      TEST_AGENT_MESSAGE: "hello from the runtime preset"
+    timeout: 120
+
+  # Real LLM-backed agent via OpenRouter. Key comes from backend/.env
+  # (OPENROUTER_API_KEY); the model is overridable per agent. Image source:
+  # backend/docker/openrouter-agent. Build it with:
+  #   docker build -t agent-orch-openrouter:latest backend/docker/openrouter-agent
+  - name: openrouter-agent
+    kind: cli
+    image: agent-orch-openrouter:latest
+    command: ["/agent/run.sh"]
+    env:
+      # Any OpenRouter id; `:free` models cost 0. Override per agent.
+      # Free pools are shared and get saturated, so the agent retries on 429.
+      # Code:    cohere/north-mini-code:free, poolside/laguna-s-2.1:free
+      # General: nvidia/nemotron-3.5-lightning:free, z-ai/glm-5.2:free
+      OPENROUTER_MODEL: "nvidia/nemotron-3.5-lightning:free"
+    required_env: [OPENROUTER_API_KEY]
+    timeout: 600
 
   - name: claude-cli
     kind: cli

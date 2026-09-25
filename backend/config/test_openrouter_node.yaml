@@ -1,0 +1,40 @@
+# Single-node cli_agent test backed by a real LLM (OpenRouter).
+#
+# Uses the `openrouter-agent` runtime preset from config/runtimes.yaml; the key
+# comes from backend/.env (OPENROUTER_API_KEY). Build the image once with:
+#   docker build -t agent-orch-openrouter:latest backend/docker/openrouter-agent
+#
+# Import + run:
+#   curl -s localhost:8010/workflows/import \
+#     -H 'content-type: application/json' \
+#     -d '{"yaml_path": "config/test_openrouter_node.yaml"}'
+#   curl -s -X POST localhost:8010/workflows/<id>/execute
+#   curl -s "localhost:8010/events/stream?thread_id=<thread_id>"
+#   curl -s localhost:8010/workflows/<thread_id>/status
+#
+# Swap models with OPENROUTER_MODEL (any OpenRouter id; `:free` models cost 0).
+# Free pools are shared and get saturated; the agent retries on HTTP 429.
+#   nvidia/nemotron-3.5-lightning:free  (default, 1M context, fast)
+#   cohere/north-mini-code:free         (coding)
+#   poolside/laguna-s-2.1:free          (coding agent; often rate-limited)
+version: 1
+
+agents:
+  llm:
+    type: cli_agent
+    runtime: openrouter-agent
+    inputs:
+      artifacts: ["ai_review/**/*.md"]
+      env:
+        OPENROUTER_PROMPT: >-
+          In three short bullet points, explain what a LangGraph orchestrator
+          does. End with the word DONE.
+        OPENROUTER_MODEL: "nvidia/nemotron-3.5-lightning:free"
+
+workflow:
+  name: "OpenRouter CLI Agent Test"
+  description: "One cli_agent node calling a real LLM via OpenRouter."
+  hitl_enabled: false
+  nodes:
+    - { id: llm, agent: llm }
+  edges: []
