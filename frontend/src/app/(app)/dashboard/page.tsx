@@ -30,25 +30,22 @@ export default function Dashboard() {
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    fetchWorkflows();
+    async function loadWorkflows() {
+      try {
+        const res = await fetch(`${API_BASE}/workflows/`);
+        if (!res.ok) throw new Error('Failed to fetch workflows');
+        setWorkflows(await res.json());
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadWorkflows();
     return () => {
       eventSourceRef.current?.close();
     };
   }, []);
-
-  async function fetchWorkflows() {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`${API_BASE}/workflows/`);
-      if (!res.ok) throw new Error('Failed to fetch workflows');
-      setWorkflows(await res.json());
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
 
   async function executeWorkflow(workflowId: string) {
     setExecutingId(workflowId);
@@ -83,8 +80,8 @@ export default function Dashboard() {
         console.error('SSE stream error');
       };
       eventSourceRef.current = es;
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
       setExecutingId(null);
     }
   }
@@ -99,8 +96,8 @@ export default function Dashboard() {
         throw new Error(data.detail || 'Failed to resume workflow');
       }
       setIsResuming(false);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
       setIsResuming(false);
     }
   }

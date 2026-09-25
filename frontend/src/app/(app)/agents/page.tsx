@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import DynamicForm from './components/DynamicForm';
+import DynamicForm, { type JSONSchema } from './components/DynamicForm';
 import { API_BASE } from '@/lib/api';
 
 interface NodeType {
@@ -10,8 +10,8 @@ interface NodeType {
   display_name: string;
   description: string;
   executor_key: string;
-  config_schema: any;
-  default_config: any;
+  config_schema: JSONSchema;
+  default_config: Record<string, unknown> | null;
   icon: string;
 }
 
@@ -20,7 +20,7 @@ interface Agent {
   name: string;
   description: string;
   node_type_key: string;
-  params: Record<string, any>;
+  params: Record<string, unknown>;
   created_at: string;
   updated_at?: string;
 }
@@ -36,7 +36,7 @@ export default function AgentsPage() {
   const [selectedTypeKey, setSelectedTypeKey] = useState<string>('');
   const [agentName, setAgentName] = useState('');
   const [agentDescription, setAgentDescription] = useState('');
-  const [agentParams, setAgentParams] = useState<Record<string, any>>({});
+  const [agentParams, setAgentParams] = useState<Record<string, unknown>>({});
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -59,8 +59,8 @@ export default function AgentsPage() {
       if (!agentsRes.ok) throw new Error('Failed to fetch agents');
       setNodeTypes(await typesRes.json());
       setAgents(await agentsRes.json());
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -105,8 +105,8 @@ export default function AgentsPage() {
       setSelectedTypeKey('');
       setShowCreateForm(false);
       await fetchData();
-    } catch (e: any) {
-      setCreateError(e.message);
+    } catch (e: unknown) {
+      setCreateError(e instanceof Error ? e.message : String(e));
     } finally {
       setCreating(false);
     }
@@ -118,8 +118,8 @@ export default function AgentsPage() {
       const res = await fetch(`${API_BASE}/agents/${agentId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to delete agent');
       await fetchData();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
     }
   }
 

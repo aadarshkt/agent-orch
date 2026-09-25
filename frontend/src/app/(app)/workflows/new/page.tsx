@@ -9,7 +9,7 @@ interface Agent {
   name: string;
   description: string;
   node_type_key: string;
-  params: Record<string, any>;
+  params: Record<string, unknown>;
 }
 
 interface NodeType {
@@ -28,6 +28,25 @@ interface WorkflowEdge {
   from_node: string;
   to_node: string;
   condition: string | null;
+}
+
+function buildEdges(nodeList: WorkflowNode[], prevEdges: WorkflowEdge[]): WorkflowEdge[] {
+  if (nodeList.length < 2) return [];
+  const prevMap = new Map<string, string | null>();
+  for (const e of prevEdges) {
+    prevMap.set(`${e.from_node}->${e.to_node}`, e.condition);
+  }
+  const autoEdges: WorkflowEdge[] = [];
+  for (let i = 0; i < nodeList.length - 1; i++) {
+    const key = `${nodeList[i].id}->${nodeList[i + 1].id}`;
+    const existingCond = prevMap.has(key) ? prevMap.get(key)! : (prevEdges[i]?.condition || null);
+    autoEdges.push({
+      from_node: nodeList[i].id,
+      to_node: nodeList[i + 1].id,
+      condition: existingCond,
+    });
+  }
+  return autoEdges;
 }
 
 export default function NewWorkflowPage() {
@@ -49,33 +68,24 @@ export default function NewWorkflowPage() {
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   useEffect(() => {
-    fetchData();
-  }, []);
-
-  // Auto-generate sequential edges when nodes change, preserving existing conditions
-  useEffect(() => {
-    if (nodes.length < 2) {
-      setEdges([]);
-      return;
+    async function loadData() {
+      try {
+        const [agentsRes, typesRes] = await Promise.all([
+          fetch(`${API_BASE}/agents/`),
+          fetch(`${API_BASE}/node-types/`),
+        ]);
+        if (!agentsRes.ok) throw new Error('Failed to fetch agents');
+        if (!typesRes.ok) throw new Error('Failed to fetch node types');
+        setAgents(await agentsRes.json());
+        setNodeTypes(await typesRes.json());
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
     }
-    setEdges((prevEdges) => {
-      const prevMap = new Map<string, string | null>();
-      for (const e of prevEdges) {
-        prevMap.set(`${e.from_node}->${e.to_node}`, e.condition);
-      }
-      const autoEdges: WorkflowEdge[] = [];
-      for (let i = 0; i < nodes.length - 1; i++) {
-        const key = `${nodes[i].id}->${nodes[i + 1].id}`;
-        const existingCond = prevMap.has(key) ? prevMap.get(key)! : (prevEdges[i]?.condition || null);
-        autoEdges.push({
-          from_node: nodes[i].id,
-          to_node: nodes[i + 1].id,
-          condition: existingCond,
-        });
-      }
-      return autoEdges;
-    });
-  }, [nodes]);
+    loadData();
+  }, []);
 
   function getConditionInfo(condition: string | null) {
     if (!condition || !condition.trim()) {
@@ -94,31 +104,17 @@ export default function NewWorkflowPage() {
     return { type: 'custom', label: condition, className: 'cond-custom' };
   }
 
-  async function fetchData() {
-    setLoading(true);
-    try {
-      const [agentsRes, typesRes] = await Promise.all([
-        fetch(`${API_BASE}/agents/`),
-        fetch(`${API_BASE}/node-types/`),
-      ]);
-      if (!agentsRes.ok) throw new Error('Failed to fetch agents');
-      if (!typesRes.ok) throw new Error('Failed to fetch node types');
-      setAgents(await agentsRes.json());
-      setNodeTypes(await typesRes.json());
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
   function addNode(agentId: string) {
     const nodeId = `step_${nodes.length + 1}`;
-    setNodes([...nodes, { id: nodeId, agent_id: agentId, requires_approval: false }]);
+    const nextNodes = [...nodes, { id: nodeId, agent_id: agentId, requires_approval: false }];
+    setNodes(nextNodes);
+    setEdges((prevEdges) => buildEdges(nextNodes, prevEdges));
   }
 
   function removeNode(idx: number) {
-    setNodes(nodes.filter((_, i) => i !== idx));
+    const nextNodes = nodes.filter((_, i) => i !== idx);
+    setNodes(nextNodes);
+    setEdges((prevEdges) => buildEdges(nextNodes, prevEdges));
   }
 
   function toggleApproval(idx: number) {
@@ -134,6 +130,7 @@ export default function NewWorkflowPage() {
     const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
     [updated[idx], updated[targetIdx]] = [updated[targetIdx], updated[idx]];
     setNodes(updated);
+    setEdges((prevEdges) => buildEdges(updated, prevEdges));
   }
 
   function updateEdgeCondition(idx: number, condition: string) {
@@ -167,8 +164,8 @@ export default function NewWorkflowPage() {
       }
       setSaveSuccess(true);
       setTimeout(() => router.push('/dashboard'), 1500);
-    } catch (e: any) {
-      setSaveError(e.message);
+    } catch (e: unknown) {
+      setSaveError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
     }
