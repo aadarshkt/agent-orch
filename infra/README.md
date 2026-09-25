@@ -39,6 +39,15 @@ would not see each other's events.
   Then either make the four GHCR packages **public**, or give `ghcr_token` a PAT with
   `read:packages` so the host can pull them.
 
+  Pushing from an arm64 Mac builds for `linux/amd64` by default (`PLATFORM` in
+  `deploy/push-images.sh`) because the instance is x86_64 — an arm64 image would fail on
+  the host with *"no matching manifest for linux/amd64"*. Docker needs enough free disk to
+  run the emulated build; if macOS reports the disk is nearly full, the VM's filesystem can
+  go read-only and builds fail with `input/output error`.
+
+  The instance type must also be free-tier-eligible if the account is on the AWS FREE plan
+  (see Troubleshooting).
+
 ## Deploy
 
 ```bash
@@ -150,6 +159,11 @@ workspaces are gone. Back up first if you care:
 
 - **Cloud-init failed** → `sudo cat /var/log/cloud-init-output.log`. Re-run with
   `sudo bash /opt/agent-orch/bootstrap.sh`.
+- **`aws: command not found` during boot** → Ubuntu 24.04 does not package `awscli`
+  (it was Python 2 based), and one missing package makes cloud-init's whole
+  `packages:` step fail. It is therefore not in that list; `bootstrap.sh` installs the
+  AWS CLI v2 itself in step 0. Re-running bootstrap fixes a host provisioned before
+  that change.
 - **Data volume not mounted** → `lsblk`; the script waits 60 s for
   `/dev/nvme1n1` (Nitro) or `/dev/xvdf`. `sudo mount -a` after attaching manually.
 - **"no basic auth credentials" / pull denied** → the GHCR packages are private and
