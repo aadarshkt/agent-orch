@@ -92,25 +92,22 @@ export default function Dashboard() {
   const [stateLoading, setStateLoading] = useState(false);
 
   useEffect(() => {
-    fetchWorkflows();
+    async function loadWorkflows() {
+      try {
+        const res = await fetch(`${API_BASE}/workflows/`);
+        if (!res.ok) throw new Error('Failed to fetch workflows');
+        setWorkflows(await res.json());
+      } catch (e) {
+        setError(errorMessage(e));
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadWorkflows();
     return () => {
       eventSourceRef.current?.close();
     };
   }, []);
-
-  async function fetchWorkflows() {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`${API_BASE}/workflows/`);
-      if (!res.ok) throw new Error('Failed to fetch workflows');
-      setWorkflows(await res.json());
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  }
 
   async function loadRuns(workflowId: string) {
     try {

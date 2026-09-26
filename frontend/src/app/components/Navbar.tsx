@@ -14,9 +14,14 @@ export default function Navbar() {
 
   return (
     <nav className="navbar">
-      <Link href="/dashboard" className="navbar-brand">
-        <span className="navbar-title">Agent Orchestrator</span>
-      </Link>
+      <div className="navbar-left">
+        <Link href="/" className="btn btn-ghost btn-sm">
+          Back to home
+        </Link>
+        <Link href="/dashboard" className="navbar-brand">
+          <span className="navbar-title">Agent Orchestrator</span>
+        </Link>
+      </div>
       <div className="navbar-links">
         {navItems.map((item) => {
           const isActive = pathname.startsWith(item.href);
