@@ -54,9 +54,41 @@ ensure_awscli() {
 
 ensure_awscli
 
+# ── 0b. SSM agent ─────────────────────────────────────────────────────────────
+# Canonical Ubuntu AMIs ship amazon-ssm-agent as a snap, so make sure that unit
+# is running; only fall back to the upstream .deb if the snap is missing.
+# Idempotent.
+ensure_ssm_agent() {
+  if snap list amazon-ssm-agent >/dev/null 2>&1; then
+    systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  if systemctl list-unit-files 2>/dev/null | grep -q '^amazon-ssm-agent\.service'; then
+    systemctl enable --now amazon-ssm-agent >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  log "Installing amazon-ssm-agent (deb)"
+  local tmp
+  tmp="$(mktemp -d)"
+  if curl -fsSL "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb" \
+       -o "$tmp/amazon-ssm-agent.deb"; then
+    dpkg -i "$tmp/amazon-ssm-agent.deb" >/dev/null 2>&1 || apt-get -f install -y >/dev/null 2>&1 || true
+    systemctl enable --now amazon-ssm-agent >/dev/null 2>&1 || true
+  else
+    log "WARNING: could not download amazon-ssm-agent (Session Manager unavailable)"
+  fi
+  rm -rf "$tmp"
+}
+
+ensure_ssm_agent
+
 # ── 1. Attach and mount the data volume ───────────────────────────────────────
+# The attachment is created by OpenTofu alongside the instance and can land
+# after cloud-init starts, so wait long enough for the Nitro device to appear.
 DEV=""
-for _ in $(seq 1 30); do
+for _ in $(seq 1 90); do
   for candidate in /dev/nvme1n1 /dev/xvdf /dev/sdf; do
     if [ -b "$candidate" ]; then
       DEV="$candidate"
@@ -88,13 +120,24 @@ fi
 install -d "$ROOT/workspaces" "$ROOT/.docker" "$ROOT/pgdata" "$ROOT/caddy"
 
 # ── 2. Runtime secrets from SSM Parameter Store ───────────────────────────────
+# Instance-profile credentials can take a few seconds to reach the CLI right
+# after boot, so retry rather than failing the whole provision.
 get_param() {
-  aws ssm get-parameter \
-    --region "$AWS_REGION" \
-    --name "${SSM_PREFIX}/$1" \
-    --with-decryption \
-    --query 'Parameter.Value' \
-    --output text
+  local name="$1" attempt value
+  for attempt in $(seq 1 15); do
+    if value=$(aws ssm get-parameter \
+      --region "$AWS_REGION" \
+      --name "${SSM_PREFIX}/${name}" \
+      --with-decryption \
+      --query 'Parameter.Value' \
+      --output text 2>/dev/null) && [ -n "$value" ] && [ "$value" != "None" ]; then
+      printf '%s' "$value"
+      return 0
+    fi
+    log "Waiting for SSM parameter ${SSM_PREFIX}/${name} (attempt ${attempt})"
+    sleep 4
+  done
+  return 1
 }
 
 # Optional secrets are only created in SSM when a value was supplied.
