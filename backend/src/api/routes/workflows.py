@@ -15,10 +15,13 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 
 from src.db.session import get_db
-from src.db.models import WorkflowModel, AgentModel, NodeTypeModel, WorkflowExecutionModel
+from src.db.models import (
+    WorkflowModel, AgentModel, NodeTypeModel, WorkflowExecutionModel, IncidentModel,
+)
 from src.config.schema import WorkflowConfig, NodeConfig, EdgeConfig, WorkflowSpec
 from src.config.parser import load_workflow_spec, parse_workflow_spec
 from src.engine.orchestrator import compile_workflow
+from src.engine.templating import node_outputs
 from src.engine.pubsub import event_bus
 from src.registry.base_executor import ExecutionContext
 from src.registry.runtime_registry import register_runtimes, resolve_runtime
@@ -86,6 +89,29 @@ class UpdateWorkflowRequest(BaseModel):
 class ImportWorkflowRequest(BaseModel):
     yaml_path: Optional[str] = None
     yaml_content: Optional[str] = None
+
+
+class ExecuteWorkflowRequest(BaseModel):
+    """Optional run inputs, merged over the workflow's declared defaults."""
+
+    inputs: Dict[str, Any] = {}
+
+
+class ReviewDecisionRequest(BaseModel):
+    """A human's verdict on a run that is waiting at an approval gate.
+
+    `decision` is recorded in the checkpointer rather than only in the
+    execution row, so the outcome survives a page reload and is visible to
+    whichever operator opens the run next.
+    """
+
+    decision: str  # "approve" | "reject"
+    comment: Optional[str] = None
+    reviewer: Optional[str] = None
+
+    @property
+    def approved(self) -> bool:
+        return self.decision.strip().lower() in ("approve", "approved", "accept", "yes")
 
 
 # ──────────────────────────────────────────────
@@ -225,11 +251,15 @@ def _import_workflow_spec(spec: WorkflowSpec, db: Session) -> WorkflowModel:
         .filter(WorkflowModel.name == spec.workflow.name)
         .first()
     )
+    inputs = dict(spec.workflow.inputs)
+    triggers = [t.model_dump() for t in spec.workflow.triggers]
     if workflow:
         workflow.description = spec.workflow.description
         workflow.hitl_enabled = spec.workflow.hitl_enabled
         workflow.nodes = nodes
         workflow.edges = edges
+        workflow.inputs = inputs
+        workflow.triggers = triggers
         workflow.updated_at = datetime.utcnow()
     else:
         workflow = WorkflowModel(
@@ -239,6 +269,8 @@ def _import_workflow_spec(spec: WorkflowSpec, db: Session) -> WorkflowModel:
             hitl_enabled=spec.workflow.hitl_enabled,
             nodes=nodes,
             edges=edges,
+            inputs=inputs,
+            triggers=triggers,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
@@ -275,6 +307,11 @@ def import_workflow(req: ImportWorkflowRequest, db: Session = Depends(get_db)):
         "status": "ready",
         "nodes": workflow.nodes,
         "edges": workflow.edges,
+        "inputs": workflow.inputs or {},
+        "triggers": [
+            {**t, "webhook": f"/triggers/{workflow.id}/{t['source']}"}
+            for t in workflow.triggers or []
+        ],
     }
 
 
@@ -309,6 +346,8 @@ def get_workflow(workflow_id: str, db: Session = Depends(get_db)):
         "hitl_enabled": w.hitl_enabled,
         "nodes": w.nodes,
         "edges": w.edges,
+        "inputs": w.inputs or {},
+        "triggers": w.triggers or [],
         "created_at": w.created_at.isoformat() if w.created_at else None,
         "updated_at": w.updated_at.isoformat() if w.updated_at else None,
     }
@@ -441,6 +480,38 @@ def _resolve_workflow(workflow_id: str, db: Session):
     return config, agents_map, node_types_map
 
 
+def _claim_paused_execution(thread_id: str) -> bool:
+    """Atomically move a run out of `paused`, returning False if someone else won.
+
+    The review gate is a one-shot transition. A read-then-write pair would let a
+    double-clicked Approve queue the same graph twice, so the guard lives in the
+    UPDATE's WHERE clause where the database arbitrates.
+    """
+    from src.db.session import SessionLocal
+
+    db_session = SessionLocal()
+    try:
+        claimed = (
+            db_session.query(WorkflowExecutionModel)
+            .filter(
+                WorkflowExecutionModel.thread_id == thread_id,
+                WorkflowExecutionModel.status == "paused",
+            )
+            .update(
+                {WorkflowExecutionModel.status: "running"},
+                synchronize_session=False,
+            )
+        )
+        db_session.commit()
+        return claimed > 0
+    except Exception as err:
+        db_session.rollback()
+        print(f"Failed to claim paused execution {thread_id}: {err}")
+        return False
+    finally:
+        db_session.close()
+
+
 def _update_execution_status(
     thread_id: str,
     status: Optional[str] = None,
@@ -475,13 +546,38 @@ def _update_execution_status(
         db_session.close()
 
 
+def _terminal_status(values: Dict[str, Any]) -> tuple:
+    """Decide whether a graph that has drained to END actually succeeded.
+
+    Returns (status, error). An error always wins over a success status, since
+    `status` is a single last-writer-wins slot that an earlier node can leave
+    looking healthy after a later one failed.
+    """
+    values = values or {}
+    graph_status = values.get("status")
+    node_error = values.get("error")
+    if node_error or graph_status in ("failed", "error", "failure"):
+        return "failed", node_error or f"A step failed (status '{graph_status}')"
+    return "completed", None
+
+
+#: Run statuses that will never execute another node. A checkpoint left over
+#: from an abandoned run still lists the node it was paused at, so these must
+#: not be reported as "up next" or the UI shows a gate that can never be acted
+#: on.
+TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "rejected"})
+
+
 def _summarize_run_state(
     config: WorkflowConfig,
     values: Dict[str, Any],
     next_steps=(),
+    run_status: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Flatten a checkpointer snapshot into per-node outputs/artifacts."""
     values = values or {}
+    if run_status in TERMINAL_RUN_STATUSES:
+        next_steps = ()
     artifacts = values.get("artifacts") or {}
     nodes: Dict[str, Any] = {}
     for node in config.nodes:
@@ -492,14 +588,124 @@ def _summarize_run_state(
             "exit_code": artifacts.get(f"{node_id}_exit_code"),
             "commit": artifacts.get(f"{node_id}_commit"),
             "commit_url": artifacts.get(f"{node_id}_commit_url"),
+            "pr_url": artifacts.get(f"{node_id}_pr_url"),
+            "outputs": artifacts.get(f"{node_id}_outputs") or {},
             "workspace": artifacts.get(f"{node_id}_workspace"),
         }
+    steps = _summarize_steps(config, artifacts, next_steps, run_status, values)
     return {
         "graph_status": values.get("status"),
         "approval_status": values.get("approval_status"),
+        "approval_reviewer": values.get("approval_reviewer"),
+        "approval_comment": values.get("approval_comment"),
         "next": list(next_steps or []),
+        "inputs": values.get("inputs") or {},
+        "pr_url": run_pr_url(artifacts),
+        "steps": steps,
         "nodes": nodes,
     }
+
+
+def run_pr_url(artifacts: Dict[str, Any]) -> Optional[str]:
+    """The pull request a run opened, if any node opened one."""
+    return next(
+        (v for k, v in (artifacts or {}).items() if k.endswith("_pr_url") and v),
+        None,
+    )
+
+
+def _sync_incident(thread_id: str, run_status: str, values: Optional[Dict[str, Any]] = None) -> None:
+    """Mirror a run's outcome onto the incident that started it (if any).
+
+    A run that drains to END without a PR counts as `failed` for the incident
+    even when the graph took its failure branch cleanly: no fix shipped.
+    """
+    from src.db.session import SessionLocal
+
+    pr_url = run_pr_url((values or {}).get("artifacts") or {})
+    if run_status in ("running", "paused", "rejected"):
+        status = run_status
+    else:
+        status = "pr_open" if pr_url else "failed"
+
+    db_session = SessionLocal()
+    try:
+        incident = (
+            db_session.query(IncidentModel)
+            .filter(IncidentModel.thread_id == thread_id)
+            .first()
+        )
+        if incident:
+            incident.status = status
+            if pr_url:
+                incident.pr_url = pr_url
+            db_session.commit()
+    except Exception as err:
+        db_session.rollback()
+        print(f"Failed to sync incident for {thread_id}: {err}")
+    finally:
+        db_session.close()
+
+
+def _summarize_steps(
+    config: WorkflowConfig,
+    artifacts: Dict[str, Any],
+    next_steps=(),
+    run_status: Optional[str] = None,
+    values: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Derive a per-node progress summary in declared graph order.
+
+    This is the high-level view: it answers "where is the run" without
+    exposing raw output. Status is inferred from what the checkpoint actually
+    holds rather than from a separate log, so it stays truthful after a reload.
+
+      completed  the node ran and exited 0
+      failed     the node ran and exited non-zero
+      running    the node is executing right now
+      waiting    the run is paused at this node's approval gate
+      pending    the node has not started
+    """
+    next_set = set(next_steps or ())
+    values = values or {}
+    # The dispatcher records every node that finished, so this is authoritative.
+    # The artifact scan is a fallback for checkpoints written before that existed.
+    recorded = set(values.get("completed_steps") or ())
+    # A node that throws records nothing, but the graph names it in `current_step`.
+    failed_step = values.get("current_step") if values.get("error") else None
+    steps: List[Dict[str, Any]] = []
+
+    for index, node in enumerate(config.nodes):
+        node_id = node.id
+        exit_code = artifacts.get(f"{node_id}_exit_code")
+        has_run = node_id in recorded or any(
+            key.startswith(f"{node_id}_") for key in artifacts
+        )
+
+        if exit_code is not None and exit_code != 0:
+            status = "failed"
+        elif has_run:
+            status = "completed"
+        elif node_id == failed_step:
+            status = "failed"
+        elif node_id in next_set:
+            # The graph is paused in front of this node, so it has not run yet.
+            status = "waiting" if run_status == "paused" else "running"
+        else:
+            status = "pending"
+
+        steps.append(
+            {
+                "id": node_id,
+                "index": index,
+                "status": status,
+                "exit_code": exit_code,
+                "requires_approval": bool(node.requires_approval),
+                "artifact_count": len(artifacts.get(f"{node_id}_artifacts") or []),
+            }
+        )
+
+    return steps
 
 
 def run_workflow_sync(
@@ -508,8 +714,18 @@ def run_workflow_sync(
     checkpointer,
     loop: asyncio.AbstractEventLoop,
     is_resume: bool = False,
+    decision: Optional[dict] = None,
+    inputs: Optional[Dict[str, Any]] = None,
 ):
-    """Background task that runs the workflow synchronously."""
+    """Background task that runs the workflow synchronously.
+
+    `inputs` are the run inputs for a fresh run (workflow defaults already
+    merged in by the caller); they are fixed in the initial state.
+
+    `decision` carries the human verdict when `is_resume` is set:
+    {"approved": bool, "comment": str|None, "reviewer": str|None}. A rejection
+    is terminal — the gated node is never executed and the run ends `rejected`.
+    """
     from src.db.session import SessionLocal
 
     db = SessionLocal()
@@ -532,6 +748,8 @@ def run_workflow_sync(
             checkpointer=checkpointer,
         )
 
+        # Reuse the graph the original run compiled so the resume continues
+        # against the very checkpoint that paused, not a fresh compilation.
         graph = compile_workflow(
             config, agents_map, node_types_map, context, checkpointer
         )
@@ -544,6 +762,8 @@ def run_workflow_sync(
                 "current_step": "start",
                 "artifacts": {},
                 "approval_status": "pending",
+                "completed_steps": [],
+                "inputs": dict(inputs or {}),
             }
             _update_execution_status(thread_id, status="running", current_step="start")
             event_bus.publish_sync(
@@ -552,12 +772,48 @@ def run_workflow_sync(
                 loop=loop,
             )
         else:
-            _update_execution_status(thread_id, status="running")
-            # Update state in checkpointer to approve paused node
+            approved = True if decision is None else decision.get("approved", True)
+            reviewer = (decision or {}).get("reviewer")
+            comment = (decision or {}).get("comment")
+            approval_status = "approved" if approved else "rejected"
+
+            # Record the verdict in the checkpoint before anything else, so the
+            # state a later reader sees explains why the run moved on.
             try:
-                graph.update_state(config_dict, {"approval_status": "approved"})
+                graph.update_state(
+                    config_dict,
+                    {
+                        "approval_status": approval_status,
+                        "approval_reviewer": reviewer,
+                        "approval_comment": comment,
+                    },
+                )
             except Exception as e:
                 print(f"Note on state update: {e}")
+
+            if not approved:
+                # The gate is a hard stop: the node it guards never runs, and the
+                # graph is abandoned mid-flight. /state reports no pending step
+                # for a terminal run, so the checkpoint is left untouched here.
+                _update_execution_status(
+                    thread_id,
+                    status="rejected",
+                    error=comment or "Rejected by reviewer",
+                    completed=True,
+                )
+                _sync_incident(thread_id, "rejected")
+                event_bus.publish_sync(
+                    thread_id,
+                    {
+                        "event": "rejected",
+                        "data": comment
+                        or "Run rejected by reviewer. Downstream steps will not run.",
+                    },
+                    loop=loop,
+                )
+                return
+
+            _update_execution_status(thread_id, status="running")
             event_bus.publish_sync(
                 thread_id,
                 {"event": "resume", "data": "Workflow resumed. Executing approved node..."},
@@ -581,24 +837,80 @@ def run_workflow_sync(
         if state.next:
             next_step = state.next[0] if isinstance(state.next, (list, tuple)) else str(state.next)
             _update_execution_status(thread_id, status="paused", current_step=next_step)
+            _sync_incident(thread_id, "paused", state.values)
             event_bus.publish_sync(
                 thread_id,
                 {"event": "review", "data": f"Waiting for human approval at: {state.next}"},
                 loop=loop,
             )
         else:
-            _update_execution_status(thread_id, status="completed", completed=True)
-            event_bus.publish_sync(
-                thread_id,
-                {"event": "complete", "data": "Workflow finished."},
-                loop=loop,
-            )
+            # A node that fails still lets the graph drain to END, so reaching
+            # the end is not the same as succeeding. Without this check a run
+            # whose publish step threw would report `completed`.
+            final_status, final_error = _terminal_status(state.values or {})
+            _sync_incident(thread_id, final_status, state.values)
+            if final_status == "failed":
+                _update_execution_status(
+                    thread_id, status="failed", error=final_error, completed=True
+                )
+                event_bus.publish_sync(
+                    thread_id, {"event": "error", "data": final_error}, loop=loop
+                )
+            else:
+                _update_execution_status(thread_id, status="completed", completed=True)
+                event_bus.publish_sync(
+                    thread_id,
+                    {"event": "complete", "data": "Workflow finished."},
+                    loop=loop,
+                )
 
     except Exception as e:
         _update_execution_status(thread_id, status="failed", error=str(e), completed=True)
+        _sync_incident(thread_id, "failed")
         event_bus.publish_sync(
             thread_id, {"event": "error", "data": str(e)}, loop=loop
         )
+
+
+def start_run(
+    workflow: WorkflowModel,
+    db: Session,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    inputs: Optional[Dict[str, Any]] = None,
+    before_run=None,
+) -> str:
+    """Create the execution row and queue the run; returns the thread id.
+
+    Run inputs are the workflow's declared defaults overlaid with `inputs`.
+    `before_run(inputs) -> inputs` runs in the background worker just before
+    the graph starts, for slow preparation (e.g. fetching a stack trace) that
+    must not hold up a webhook response.
+    """
+    thread_id = str(uuid.uuid4())
+    db.add(WorkflowExecutionModel(
+        id=str(uuid.uuid4()),
+        thread_id=thread_id,
+        workflow_id=workflow.id,
+        status="running",
+        current_step="start",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    ))
+    db.commit()
+
+    merged = {**(workflow.inputs or {}), **(inputs or {})}
+    checkpointer = request.app.state.checkpointer
+    loop = asyncio.get_running_loop()
+
+    def run():
+        prepared = before_run(merged) if before_run else merged
+        run_workflow_sync(
+            thread_id, workflow.id, checkpointer, loop, is_resume=False, inputs=prepared
+        )
+
+    background_tasks.add_task(run)
+    return thread_id
 
 
 @router.post("/{workflow_id}/execute")
@@ -607,33 +919,16 @@ async def execute_workflow(
     request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    body: Optional[ExecuteWorkflowRequest] = None,
 ):
-    """Execute a saved workflow."""
-    # Verify workflow exists
+    """Execute a saved workflow, optionally with run inputs."""
     workflow = db.query(WorkflowModel).filter(WorkflowModel.id == workflow_id).first()
     if not workflow:
         raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found.")
 
-    thread_id = str(uuid.uuid4())
-    execution = WorkflowExecutionModel(
-        id=str(uuid.uuid4()),
-        thread_id=thread_id,
-        workflow_id=workflow_id,
-        status="running",
-        current_step="start",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+    thread_id = start_run(
+        workflow, db, request, background_tasks, inputs=(body.inputs if body else None)
     )
-    db.add(execution)
-    db.commit()
-
-    checkpointer = request.app.state.checkpointer
-    loop = asyncio.get_running_loop()
-
-    background_tasks.add_task(
-        run_workflow_sync, thread_id, workflow_id, checkpointer, loop, is_resume=False
-    )
-
     return {"status": "started", "thread_id": thread_id, "workflow_id": workflow_id}
 
 
@@ -644,7 +939,34 @@ async def resume_workflow(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """Resume a paused workflow (after human approval)."""
+    """Resume a paused workflow (after human approval).
+
+    Kept as a thin alias for POST /{thread_id}/review with decision="approve" so
+    existing callers and the original approve-only client keep working.
+    """
+    return await review_workflow(
+        thread_id,
+        request,
+        background_tasks,
+        db,
+        ReviewDecisionRequest(decision="approve"),
+    )
+
+
+@router.post("/{thread_id}/review")
+async def review_workflow(
+    thread_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    review: Optional[ReviewDecisionRequest] = None,
+):
+    """Record a human verdict on a run paused at an approval gate.
+
+    The gate is derived from the persisted execution row, not from the event
+    stream, so a reviewer who reloads the page (or opens the run later) can
+    still act on a run that is genuinely waiting.
+    """
     execution = (
         db.query(WorkflowExecutionModel)
         .filter(WorkflowExecutionModel.thread_id == thread_id)
@@ -656,25 +978,35 @@ async def resume_workflow(
             detail=f"Execution for thread '{thread_id}' not found.",
         )
 
-    if execution.status not in ("paused", "running"):
+    if execution.status != "paused":
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot resume execution in status '{execution.status}'. Must be 'paused'.",
+            detail=(
+                f"Cannot review execution in status '{execution.status}'. "
+                "It is not waiting for approval."
+            ),
         )
 
-    execution.status = "running"
-    execution.updated_at = datetime.utcnow()
-    db.commit()
+    review = review or ReviewDecisionRequest(decision="approve")
+    approved = review.approved
+    decision = {
+        "approved": approved,
+        "comment": review.comment,
+        "reviewer": review.reviewer,
+    }
+
+    if not _claim_paused_execution(thread_id):
+        # Another reviewer acted first; their verdict is the one that stands.
+        raise HTTPException(
+            status_code=409,
+            detail="This run was already reviewed. Refresh to see the outcome.",
+        )
 
     checkpointer = request.app.state.checkpointer
     loop = asyncio.get_running_loop()
 
-    event_bus.publish_sync(
-        thread_id,
-        {"event": "resume", "data": "Workflow resumed by user. Executing next step..."},
-        loop=loop,
-    )
-
+    # The worker owns the terminal status from here, so a rejection and a
+    # run that fails mid-resume can't race each other into the execution row.
     background_tasks.add_task(
         run_workflow_sync,
         thread_id,
@@ -682,10 +1014,12 @@ async def resume_workflow(
         checkpointer,
         loop,
         is_resume=True,
+        decision=decision,
     )
 
     return {
-        "status": "resumed",
+        "status": "resumed" if approved else "rejected",
+        "decision": "approved" if approved else "rejected",
         "thread_id": thread_id,
         "workflow_id": execution.workflow_id,
     }
@@ -763,7 +1097,9 @@ async def get_workflow_state(
         "error": execution.error,
         "created_at": execution.created_at.isoformat() if execution.created_at else None,
         "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
-        **_summarize_run_state(config, values, next_steps),
+        **_summarize_run_state(
+            config, values, next_steps, run_status=execution.status
+        ),
     }
 
 

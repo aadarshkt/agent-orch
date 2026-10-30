@@ -11,4 +11,6 @@ from src.executors import (
     sleep_executor,
     cli_agent_executor,
     git_commit_executor,
+    github_pr_executor,
+    alert_notify_executor,
 )

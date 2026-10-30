@@ -16,7 +16,6 @@ class APICallExecutor(BaseExecutor):
 
     runtime_kind = "none"
     display_name = "API Call"
-    icon = "globe"
     input_schema = {
         "type": "object",
         "properties": {

@@ -16,7 +16,6 @@ class CloudAgentExecutor(BaseExecutor):
 
     runtime_kind = "cloud"
     display_name = "Cloud Agent"
-    icon = "cloud"
     input_schema = {
         "type": "object",
         "properties": {

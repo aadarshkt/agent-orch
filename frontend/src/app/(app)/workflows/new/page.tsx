@@ -15,7 +15,6 @@ interface Agent {
 interface NodeType {
   type_key: string;
   display_name: string;
-  icon: string;
 }
 
 interface WorkflowNode {

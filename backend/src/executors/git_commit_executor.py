@@ -39,7 +39,6 @@ class GitCommitExecutor(BaseExecutor):
 
     runtime_kind = "none"
     display_name = "Git Commit"
-    icon = "terminal"
 
     input_schema = {
         "type": "object",

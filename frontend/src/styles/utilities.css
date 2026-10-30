@@ -134,6 +134,10 @@
 .subtle {
   color: var(--text-3);
 }
+/* Alias used across the app pages. Same tone as `.muted`. */
+.text-muted {
+  color: var(--text-2);
+}
 .strong {
   color: var(--text);
   font-weight: var(--weight-semibold);

@@ -12,7 +12,6 @@ interface NodeType {
   executor_key: string;
   config_schema: JSONSchema;
   default_config: Record<string, unknown> | null;
-  icon: string;
 }
 
 interface Agent {

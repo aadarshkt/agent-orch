@@ -76,7 +76,6 @@ def list_executors() -> List[dict]:
                 "name": cls.__name__,
                 "description": (cls.__doc__ or "").strip(),
                 "display_name": getattr(cls, "display_name", key),
-                "icon": getattr(cls, "icon", None),
                 "runtime_kind": getattr(cls, "runtime_kind", None),
                 "input_schema": input_schema,
                 "default_config": getattr(cls, "default_config", None)

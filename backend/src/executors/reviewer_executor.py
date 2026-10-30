@@ -16,7 +16,6 @@ class ReviewerExecutor(BaseExecutor):
 
     runtime_kind = "none"
     display_name = "Reviewer"
-    icon = "clipboard-check"
     input_schema = {
         "type": "object",
         "properties": {

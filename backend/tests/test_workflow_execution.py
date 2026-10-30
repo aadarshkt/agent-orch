@@ -90,6 +90,54 @@ class TestConditionalRouting(unittest.TestCase):
         self.assertEqual(final_state["on_success"]["path_taken"], "success_branch")
 
 
+class TestTerminalStatusInference(unittest.TestCase):
+    """A graph that drains to END after a failed node is not a success.
+
+    Without this check a run whose publish step threw still reports
+    `completed`, which makes the high-level status view lie to the user.
+    """
+
+    def _drain(self, node_return):
+        class State(TypedDict):
+            status: str
+            error: str
+
+        builder = StateGraph(State)
+        builder.add_node("work", lambda s: node_return)
+        builder.add_edge(START, "work")
+        builder.add_edge("work", END)
+        graph = builder.compile(checkpointer=MemorySaver())
+        cfg = {"configurable": {"thread_id": "drain"}}
+        list(graph.stream({"status": "init", "error": ""}, cfg))
+        return graph, graph.get_state(cfg).values
+
+    def test_drained_graph_reports_its_own_outcome(self):
+        from src.api.routes.workflows import _terminal_status
+
+        self.assertEqual(
+            _terminal_status({"status": "completed", "error": None}),
+            ("completed", None),
+        )
+
+        self.assertEqual(
+            _terminal_status({"status": "failed", "error": "push denied"}),
+            ("failed", "push denied"),
+        )
+
+        # An error with a stale success status still wins — the error is truth.
+        self.assertEqual(
+            _terminal_status({"status": "completed", "error": "boom"}),
+            ("failed", "boom"),
+        )
+
+    def test_a_failed_node_really_does_drain_to_end(self):
+        """Guards the assumption behind the check: the graph ends normally even
+        when the node failed, which is exactly why END alone is not proof."""
+        _, final = self._drain({"status": "failed", "error": "push denied"})
+        self.assertEqual(final["status"], "failed")
+        self.assertEqual(final["error"], "push denied")
+
+
 from sqlalchemy.pool import StaticPool
 import src.db.session
 
@@ -347,6 +395,400 @@ class TestRunStateSummary(unittest.TestCase):
         self.assertEqual(summary["next"], [])
         self.assertIsNone(summary["nodes"]["n1"]["output"])
         self.assertEqual(summary["nodes"]["n1"]["artifacts"], [])
+
+    def test_step_summary_reports_progress(self):
+        """The high-level view answers "where is this run" from what the
+        checkpoint holds, so it survives a reload and needs no event replay."""
+        from src.api.routes.workflows import _summarize_run_state
+
+        values = {
+            "artifacts": {
+                "n1_output": "done",
+                "n1_exit_code": 0,
+                "n1_artifacts": ["/ws/a.md"],
+                "n1_workspace": "/ws/n1",
+            }
+        }
+        summary = _summarize_run_state(self._config(), values, ("n2",), run_status="paused")
+        steps = {s["id"]: s for s in summary["steps"]}
+
+        self.assertEqual([s["id"] for s in summary["steps"]], ["n1", "n2"])
+        self.assertEqual(steps["n1"]["status"], "completed")
+        self.assertEqual(steps["n1"]["exit_code"], 0)
+        self.assertEqual(steps["n1"]["artifact_count"], 1)
+        # n2 is where the gate is: the run is waiting on it, and it has not run.
+        self.assertEqual(steps["n2"]["status"], "waiting")
+        self.assertIsNone(steps["n2"]["exit_code"])
+
+    def test_step_summary_detects_run_without_any_artifacts(self):
+        """A cloud_agent node stamps no artifacts at all, so an artifact scan
+        alone reports a finished step as still pending. `completed_steps`, which
+        the dispatcher writes for every node, is the authoritative signal."""
+        from src.api.routes.workflows import _summarize_run_state
+
+        values = {"completed_steps": ["n1"], "artifacts": {}}
+        steps = {
+            s["id"]: s["status"]
+            for s in _summarize_run_state(
+                self._config(), values, ("n2",), run_status="paused"
+            )["steps"]
+        }
+        self.assertEqual(steps["n1"], "completed")
+        self.assertEqual(steps["n2"], "waiting")
+
+    def test_step_summary_falls_back_to_artifacts(self):
+        """Checkpoints written before completed_steps existed must still render
+        sensibly, so an artifact the node stamped still counts as having run."""
+        from src.api.routes.workflows import _summarize_run_state
+
+        values = {"artifacts": {"n1_commit": "Pushed to o/r@abc123"}}
+        steps = {
+            s["id"]: s["status"]
+            for s in _summarize_run_state(
+                self._config(), values, ("n2",), run_status="running"
+            )["steps"]
+        }
+        self.assertEqual(steps["n1"], "completed")
+        self.assertEqual(steps["n2"], "running")
+
+    def test_dispatcher_records_every_finished_node(self):
+        """The dispatcher is the only chokepoint every node passes through, so
+        it is what makes progress knowable regardless of executor."""
+        from src.engine.orchestrator import make_node_func
+        from src.registry.base_executor import ExecutionContext
+
+        seen = []
+
+        class Recorder:
+            async def execute(self, node_config, state, context):
+                seen.append(node_config["id"])
+                # An executor that records nothing of its own.
+                return {**state, "status": "completed"}
+
+        import src.engine.orchestrator as orch
+
+        original = orch.get_executor
+        orch.get_executor = lambda key: Recorder()
+        try:
+            func = make_node_func(
+                {"id": "n1", "agent_id": "a1"},
+                {"name": "A", "node_type_key": "cloud_agent", "params": {}},
+                {"executor_key": "cloud_agent"},
+                ExecutionContext(thread_id="t", event_bus=None, checkpointer=None),
+            )
+            out = func({"messages": [], "artifacts": {}})
+        finally:
+            orch.get_executor = original
+
+        self.assertEqual(seen, ["n1"])
+        self.assertEqual(out["completed_steps"], ["n1"])
+
+    def test_dispatcher_appends_without_duplicating(self):
+        from src.engine.orchestrator import make_node_func
+        from src.registry.base_executor import ExecutionContext
+
+        class Recorder:
+            async def execute(self, node_config, state, context):
+                return {**state, "completed_steps": ["n1"]}
+
+        import src.engine.orchestrator as orch
+
+        original = orch.get_executor
+        orch.get_executor = lambda key: Recorder()
+        try:
+            func = make_node_func(
+                {"id": "n1", "agent_id": "a1"},
+                {"name": "A", "node_type_key": "cloud_agent", "params": {}},
+                {"executor_key": "cloud_agent"},
+                ExecutionContext(thread_id="t", event_bus=None, checkpointer=None),
+            )
+            out = func({"messages": [], "artifacts": {}, "completed_steps": ["n1"]})
+        finally:
+            orch.get_executor = original
+
+        self.assertEqual(out["completed_steps"], ["n1"])
+
+    def test_step_summary_marks_failures_and_pending(self):
+        from src.api.routes.workflows import _summarize_run_state
+
+        values = {"artifacts": {"n1_exit_code": 2, "n1_output": "boom"}}
+        steps = {
+            s["id"]: s["status"]
+            for s in _summarize_run_state(
+                self._config(), values, ("n2",), run_status="running"
+            )["steps"]
+        }
+        self.assertEqual(steps["n1"], "failed")
+        self.assertEqual(steps["n2"], "running")
+
+        # A node the graph has not reached and is not waiting on is pending.
+        empty = _summarize_run_state(self._config(), {}, ("n1",), run_status="running")["steps"]
+        self.assertEqual({s["id"]: s["status"] for s in empty}, {"n1": "running", "n2": "pending"})
+
+    def test_step_summary_marks_everything_pending_without_artifacts(self):
+        from src.api.routes.workflows import _summarize_run_state
+
+        steps = _summarize_run_state(self._config(), {}, (), run_status="paused")["steps"]
+        self.assertEqual({s["status"] for s in steps}, {"pending"})
+
+    def test_step_summary_marks_the_failing_node(self):
+        """A node that throws records no artifacts, but the graph names it in
+        `current_step`. Without this the failed node reads as 'pending' and the
+        timeline points at the wrong step."""
+        from src.api.routes.workflows import _summarize_run_state
+
+        values = {
+            "error": "No workspace found for nodes 'review'",
+            "current_step": "n2",
+            "artifacts": {"n1_exit_code": 0, "n1_output": "ok"},
+        }
+        steps = {
+            s["id"]: s["status"]
+            for s in _summarize_run_state(
+                self._config(), values, (), run_status="failed"
+            )["steps"]
+        }
+        self.assertEqual(steps["n1"], "completed")
+        self.assertEqual(steps["n2"], "failed")
+
+    def test_pending_steps_hidden_for_terminal_runs(self):
+        """A rejected run must not keep advertising a pending node under `next`
+        — otherwise /state reports a step that will never run and the UI shows an
+        approval gate for a run that is already over. The graph itself is left
+        untouched, so `next` is suppressed at the summary layer."""
+        from src.api.routes.workflows import _summarize_run_state
+
+        self.assertEqual(
+            _summarize_run_state(self._config(), {}, ("n2",), run_status="rejected")["next"],
+            [],
+        )
+        self.assertEqual(
+            _summarize_run_state(self._config(), {}, ("n2",), run_status="failed")["next"],
+            [],
+        )
+        self.assertEqual(
+            _summarize_run_state(self._config(), {}, ("n2",), run_status="completed")["next"],
+            [],
+        )
+
+    def test_pending_steps_kept_while_run_is_live(self):
+        from src.api.routes.workflows import _summarize_run_state
+
+        for status in ("running", "paused"):
+            self.assertEqual(
+                _summarize_run_state(self._config(), {}, ("n2",), run_status=status)["next"],
+                ["n2"],
+                msg=status,
+            )
+
+    def test_review_decision_is_surfaced(self):
+        """The verdict must be readable from persisted state, not just the event
+        stream — otherwise a reload loses the record of who signed off."""
+        from src.api.routes.workflows import _summarize_run_state
+
+        summary = _summarize_run_state(
+            self._config(),
+            {
+                "approval_status": "rejected",
+                "approval_reviewer": "ada",
+                "approval_comment": "output was truncated",
+            },
+            ("n2",),
+        )
+
+        self.assertEqual(summary["approval_status"], "rejected")
+        self.assertEqual(summary["approval_reviewer"], "ada")
+        self.assertEqual(summary["approval_comment"], "output was truncated")
+        self.assertEqual(summary["next"], ["n2"])
+
+
+class TestReviewGate(unittest.TestCase):
+    """The approval gate is driven by persisted state, and reject is a real
+    terminal outcome rather than an unreachable branch."""
+
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=self.engine)
+        self.SessionLocal = sessionmaker(bind=self.engine, autocommit=False, autoflush=False)
+        self.db = self.SessionLocal()
+        self.orig_session_local = src.db.session.SessionLocal
+        src.db.session.SessionLocal = self.SessionLocal
+
+        from src.db.models import NodeTypeModel, AgentModel
+
+        self.db.add(
+            NodeTypeModel(
+                id=str(uuid.uuid4()),
+                type_key="cloud_agent",
+                display_name="Cloud Agent",
+                executor_key="cloud_agent",
+                config_schema={},
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+        )
+        self.db.add(
+            AgentModel(
+                id="a1",
+                name="Test Agent",
+                node_type_key="cloud_agent",
+                params={},
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+        )
+        self.workflow_id = str(uuid.uuid4())
+        self.db.add(
+            WorkflowModel(
+                id=self.workflow_id,
+                name="Review Gate Workflow",
+                description="",
+                hitl_enabled=True,
+                nodes=[{"id": "step_1", "agent_id": "a1", "requires_approval": False}],
+                edges=[],
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+
+    def tearDown(self):
+        src.db.session.SessionLocal = self.orig_session_local
+        self.db.close()
+
+    def _client(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from src.api.routes import workflows
+        from src.db.session import get_db
+
+        app = FastAPI()
+        app.include_router(workflows.router, prefix="/workflows")
+        app.state.checkpointer = MemorySaver()
+
+        def override_get_db():
+            try:
+                yield self.db
+            finally:
+                pass
+
+        app.dependency_overrides[get_db] = override_get_db
+        return TestClient(app)
+
+    def _execution(self, status):
+        thread_id = str(uuid.uuid4())
+        self.db.add(
+            WorkflowExecutionModel(
+                id=str(uuid.uuid4()),
+                thread_id=thread_id,
+                workflow_id=self.workflow_id,
+                status=status,
+                current_step="step_1",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+        return thread_id
+
+    def test_reject_marks_run_terminal_and_records_who(self):
+        thread_id = self._execution("paused")
+        client = self._client()
+
+        res = client.post(
+            f"/workflows/{thread_id}/review",
+            json={
+                "decision": "reject",
+                "comment": "the diff is too large to ship",
+                "reviewer": "ada",
+            },
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["decision"], "rejected")
+
+        rec = self.db.query(WorkflowExecutionModel).filter_by(thread_id=thread_id).first()
+        self.assertEqual(rec.status, "rejected")
+        self.assertIsNotNone(rec.completed_at)
+        self.assertIn("too large", rec.error)
+
+    def test_approve_resumes_the_run(self):
+        thread_id = self._execution("paused")
+        client = self._client()
+
+        res = client.post(
+            f"/workflows/{thread_id}/review",
+            json={"decision": "approve", "reviewer": "grace"},
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["decision"], "approved")
+
+    def test_review_requires_a_paused_run(self):
+        """The gate is derived from the execution row, so a run that is merely
+        running must not be reviewable."""
+        for status in ("running", "completed", "failed"):
+            thread_id = self._execution(status)
+            client = self._client()
+            res = client.post(
+                f"/workflows/{thread_id}/review", json={"decision": "approve"}
+            )
+            self.assertEqual(res.status_code, 400, msg=f"status={status}")
+
+    def test_second_review_is_refused(self):
+        """A double-clicked Approve must not queue the graph twice.
+
+        Under TestClient the background task completes before the response is
+        returned, so the second call is rejected by the `paused` precondition.
+        A live server has a narrower window where both calls pass that check,
+        which is what _claim_paused_execution closes (tested below).
+        """
+        thread_id = self._execution("paused")
+        client = self._client()
+
+        first = client.post(f"/workflows/{thread_id}/review", json={"decision": "approve"})
+        self.assertEqual(first.status_code, 200)
+
+        second = client.post(f"/workflows/{thread_id}/review", json={"decision": "approve"})
+        self.assertEqual(second.status_code, 400)
+        self.assertIn("not waiting for approval", second.json()["detail"])
+
+    def test_claim_is_one_shot(self):
+        """The claim is the arbiter for the concurrent case: exactly one caller
+        can win, no matter how many raced past the precondition check."""
+        from src.api.routes.workflows import _claim_paused_execution
+
+        thread_id = self._execution("paused")
+
+        self.assertTrue(_claim_paused_execution(thread_id))
+        self.assertFalse(_claim_paused_execution(thread_id))
+        self.assertFalse(_claim_paused_execution(thread_id))
+
+        rec = self.db.query(WorkflowExecutionModel).filter_by(thread_id=thread_id).first()
+        self.assertEqual(rec.status, "running")
+
+    def test_claim_ignores_runs_that_are_not_paused(self):
+        from src.api.routes.workflows import _claim_paused_execution
+
+        self.assertFalse(_claim_paused_execution(str(uuid.uuid4())))
+
+    def test_resume_endpoint_still_approves(self):
+        """The original approve-only endpoint is an alias and must keep working."""
+        thread_id = self._execution("paused")
+        client = self._client()
+
+        res = client.post(f"/workflows/{thread_id}/resume")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["decision"], "approved")
+
+    def test_rejected_is_reachable_from_state(self):
+        """evaluate_condition has always supported 'rejected'; a reject must be
+        able to produce it, otherwise the branch is dead code."""
+        self.assertTrue(
+            evaluate_condition("rejected", {"approval_status": "rejected"})
+        )
 
 
 class TestEdgeKeyNormalization(unittest.TestCase):

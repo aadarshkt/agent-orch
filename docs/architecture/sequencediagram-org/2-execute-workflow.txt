@@ -1,0 +1,111 @@
+title Executing a workflow (cli_agent nodes)
+autonumber 1
+
+actor User
+participant "Dashboard\n(Next.js)" as UI
+participant "FastAPI\nroutes/workflows.py" as API
+participant "SSE\nroutes/events.py" as SSE
+participant "EventBus\nengine/pubsub.py" as Bus
+database "Postgres\n(app tables)" as DB
+participant "Worker thread\nrun_workflow_sync" as W
+participant "Orchestrator\ncompile_workflow" as Orch
+participant "LangGraph\ncompiled StateGraph" as LG
+database "Checkpointer" as CP
+participant "node_func\n(dispatcher)" as Node
+participant "CliAgentExecutor" as CLI
+participant "git_fetcher" as Git
+participant "Docker container\n(runtime image)" as Docker
+
+User->UI: click Execute
+UI->API: POST /workflows/{id}/execute
+API->DB: insert WorkflowExecution(thread_id, status=running)
+API->W: BackgroundTasks.add_task(run_workflow_sync, is_resume=False)
+API-->UI: {thread_id}
+
+UI->SSE: GET /events/stream?thread_id=...
+SSE->Bus: subscribe(thread_id) returns asyncio.Queue
+note over SSE,Bus: No buffering: events published before\nthis subscribe are dropped.
+
+W->DB: _resolve_workflow: load workflow, agents, node types
+DB-->W: WorkflowConfig, agents_map, node_types_map
+
+W->Orch: compile_workflow(config, agents_map, node_types_map, context, checkpointer)
+loop each node in config.nodes
+Orch->Orch: graph.add_node(node.id, make_node_func(...))
+opt hitl_enabled and node.requires_approval
+Orch->Orch: interrupt_before.append(node.id)
+end
+end
+Orch->Orch: add edges (plain, or conditional via evaluate_condition router)
+Orch->Orch: START to nodes with no incoming edge,\nnodes with no outgoing edge to END
+Orch->LG: graph.compile(checkpointer, interrupt_before)
+LG-->W: compiled graph
+
+W->DB: status=running, current_step=start
+W->Bus: publish_sync {event: start}
+Bus-->SSE: queue.put
+SSE-->UI: data: {"event":"start"}
+
+W->LG: graph.stream(initial_state, {thread_id})
+
+loop for each node LangGraph schedules
+LG->CP: save checkpoint (state before node)
+LG->Node: node_func(state)
+Node->Node: get_executor("cli_agent")
+Node->CLI: new event loop: execute(exec_config, state, context)
+
+CLI->CLI: resolve_runtime(params.runtime)\nimage, command, env, timeout
+CLI->CLI: mkdir $WORKSPACE_ROOT/agent-orch/{thread_id}/{node_id}
+CLI->Bus: publish {event: agent, "Workspace: ..."}
+
+loop repos, skills, context, prompt (each a Source {repo, ref, path})
+CLI->Git: resolve_source(source, dest, cache_root)
+Git->Git: clone or reuse cached checkout at ref,\ncopy path to dest
+end
+CLI->CLI: copy upstream {node}_artifacts files into\n.agent/context/upstream/{node}/
+CLI->CLI: build env (AGENT_* paths, required_env from host, overrides)
+CLI->CLI: write .agent/env (secrets go via --env-file, not -e)
+opt REGISTRY_USERNAME / PASSWORD set
+CLI->Docker: docker login --password-stdin
+end
+
+CLI->Docker: docker run --rm --env-file ... -v node_dir:/workspace image cmd
+loop each stdout/stderr line
+Docker-->CLI: line
+CLI->Bus: publish {event: agent, line}
+Bus-->SSE: queue.put
+SSE-->UI: data: {"event":"agent", ...}
+end
+
+alt exits before timeout
+Docker-->CLI: exit code
+CLI->CLI: glob params.artifacts in node_dir
+CLI-->Node: state + artifacts (workspace, repos, exit_code, output, artifacts),\nmessage, status=completed or failed
+else timeout
+CLI->Docker: kill
+CLI-->Node: state with status=failed, error="Timed out after Ns"
+end
+
+Node->Node: append node_id to completed_steps
+note over Node: Any exception becomes\n{status: failed, error} instead of raising
+Node-->LG: new state
+LG->CP: save checkpoint (state after node)
+LG->LG: pick next node: fixed edge, or router evaluating\n"success" / "failure" / "approved" / expression
+LG-->W: yield {node_id: state}
+W->DB: current_step=node_id
+W->Bus: publish_sync {event: agent, "Completed step: node_id"}
+end
+
+W->LG: graph.get_state({thread_id})
+LG->CP: load latest checkpoint
+alt state.next is set (stopped at an interrupt_before node)
+W->DB: status=paused, current_step=next
+W->Bus: publish_sync {event: review}
+SSE-->UI: review event: show Approve / Reject
+else drained to END with an error in state
+W->DB: status=failed, error
+W->Bus: publish_sync {event: error}
+else drained to END cleanly
+W->DB: status=completed
+W->Bus: publish_sync {event: complete}
+end

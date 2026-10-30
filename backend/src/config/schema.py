@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -81,10 +81,27 @@ class WorkflowNodeSpec(BaseModel):
     requires_approval: bool = False
 
 
+class TriggerSpec(BaseModel):
+    """An alert source allowed to start this workflow over a webhook.
+
+    POST /triggers/{workflow_id}/{source}. The incident is normalized, deduped
+    by fingerprint within ``dedupe_window_hours``, and the run starts with
+    ``inputs = {**workflow.inputs, **trigger.inputs, "incident": incident}``.
+    """
+    source: Literal["sentry", "datadog", "github", "generic"]
+    secret_env: Optional[str] = None        # host env var holding the webhook secret
+    match: Dict[str, Any] = Field(default_factory=dict)   # incident field -> required value
+    inputs: Dict[str, Any] = Field(default_factory=dict)  # per-trigger input overrides
+    dedupe_window_hours: float = 24.0
+
+
 class WorkflowGraphSpec(BaseModel):
     name: str
     description: Optional[str] = None
     hitl_enabled: bool = False
+    # Default run inputs; params reference them as {{ name }}.
+    inputs: Dict[str, Any] = Field(default_factory=dict)
+    triggers: List[TriggerSpec] = Field(default_factory=list)
     nodes: List[WorkflowNodeSpec]
     edges: List[EdgeConfig]
 

@@ -16,7 +16,6 @@ class ScriptRunnerExecutor(BaseExecutor):
 
     runtime_kind = "none"
     display_name = "Script Runner"
-    icon = "terminal"
     input_schema = {
         "type": "object",
         "properties": {

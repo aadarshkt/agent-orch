@@ -3,6 +3,15 @@
 #
 # Build:  docker build -t agent-orch-aider:latest backend/docker/aider-agent
 #
+# Two entrypoints:
+#   /agent/run.sh             one-shot: apply the node prompt to the first repo
+#   /agent/stages/<stage>.sh  the issue-fix pipeline (triage, reproduce, fix);
+#                             see stages/lib.sh for the env contract
+#
+# The image carries Python and Node toolchains so the stages can install and
+# test most repos. A repo that needs something else (Go, a JVM, system libs)
+# should use a runtime whose image extends this one.
+#
 # Register it as a runtime and give the agent a `repos` Source so Aider has a
 # working tree. Model + key come from the runtime env (interpolated from
 # backend/.env), for example:
@@ -21,13 +30,18 @@
 FROM python:3.12-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git \
+ && apt-get install -y --no-install-recommends git nodejs npm \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir aider-chat
 
+# The mounted repo is owned by the host user, not the container's root; without
+# this git refuses to operate on it ("dubious ownership").
+RUN git config --system --add safe.directory '*'
+
 COPY run.sh /agent/run.sh
-RUN chmod +x /agent/run.sh
+COPY stages/ /agent/stages/
+RUN chmod +x /agent/run.sh /agent/stages/*.sh
 
 WORKDIR /workspace
 ENTRYPOINT ["/agent/run.sh"]

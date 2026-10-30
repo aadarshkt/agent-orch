@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, JSON, Boolean
+from sqlalchemy import Column, String, Text, DateTime, JSON, Boolean, Integer, UniqueConstraint
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
 import uuid
@@ -20,7 +20,6 @@ class NodeTypeModel(Base):
     executor_key = Column(String, nullable=False)                 # Maps to in-memory executor registry
     config_schema = Column(JSON, nullable=False)                  # JSON Schema for params
     default_config = Column(JSON, nullable=True)                  # Default values
-    icon = Column(String, nullable=True)                          # Icon identifier for UI
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -52,6 +51,8 @@ class WorkflowModel(Base):
     hitl_enabled = Column(Boolean, default=False)
     nodes = Column(JSON, nullable=False)                          # [{id, agent_id, requires_approval}, ...]
     edges = Column(JSON, nullable=False)                          # [{from, to, condition?}, ...]
+    inputs = Column(JSON, nullable=True)                          # default run inputs, {{ }}-referenced by params
+    triggers = Column(JSON, nullable=True)                        # [{source, secret_env, match, inputs, dedupe_window_hours}]
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -76,10 +77,37 @@ class WorkflowExecutionModel(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     thread_id = Column(String, unique=True, index=True, nullable=False)
     workflow_id = Column(String, nullable=False, index=True)
-    status = Column(String, nullable=False, default="running")  # running, paused, completed, failed
+    status = Column(String, nullable=False, default="running")  # running, paused, completed, failed, rejected
     current_step = Column(String, nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
 
+
+
+class IncidentModel(Base):
+    """
+    One deduplicated alert per workflow.
+
+    Repeat webhooks for the same fingerprint bump `occurrences` instead of
+    starting another run, so a noisy alert costs one fix attempt, not fifty.
+    `status` follows the run: running, paused, pr_open, failed, rejected.
+    """
+    __tablename__ = "incidents"
+    __table_args__ = (UniqueConstraint("workflow_id", "fingerprint", name="uq_incident_fingerprint"),)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    workflow_id = Column(String, nullable=False, index=True)
+    source = Column(String, nullable=False)
+    fingerprint = Column(String, nullable=False)
+    title = Column(Text, nullable=True)
+    url = Column(Text, nullable=True)
+    status = Column(String, nullable=False, default="running")
+    thread_id = Column(String, nullable=True, index=True)
+    pr_url = Column(Text, nullable=True)
+    occurrences = Column(Integer, nullable=False, default=1)
+    runs = Column(Integer, nullable=False, default=1)
+    incident = Column(JSON, nullable=True)                        # latest normalized payload
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+    last_run_at = Column(DateTime, default=datetime.utcnow)

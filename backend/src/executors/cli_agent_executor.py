@@ -16,12 +16,21 @@ path convention: it materializes each Source, mounts the node directory at
     AGENT_SKILLS_DIR    /workspace/.agent/skills
     AGENT_CONTEXT_DIR   /workspace/.agent/context
     AGENT_PROMPT_FILE   /workspace/.agent/prompt.md
+    AGENT_INPUTS_FILE   /workspace/.agent/context/inputs.json   (run inputs)
+    AGENT_INCIDENT_FILE /workspace/.agent/context/incident.md   (when triggered by an alert)
+    AGENT_OUTPUTS_FILE  /workspace/.agent/outputs.json
+
+An agent may write a JSON object to AGENT_OUTPUTS_FILE. It is stored as the
+node's structured outputs, readable by edge conditions
+(``outputs['triage'].get('actionable')``) and by later params
+(``{{ outputs.triage.summary }}``).
 
 The executor is intentionally one-shot and non-interactive; a timeout marks the
 node failed.
 """
 import asyncio
 import glob as globlib
+import json
 import os
 import re
 import tempfile
@@ -62,7 +71,6 @@ class CliAgentExecutor(BaseExecutor):
 
     runtime_kind = "cli"
     display_name = "CLI Agent"
-    icon = "terminal"
 
     input_schema = {
         "type": "object",
@@ -95,6 +103,13 @@ class CliAgentExecutor(BaseExecutor):
                 **SOURCE_SCHEMA,
                 "title": "Prompt",
                 "description": "Prompt file, materialized to .agent/prompt.md",
+            },
+            "instructions": {
+                "type": "string",
+                "title": "Instructions",
+                "description": "Inline prompt written to .agent/prompt.md (appended after "
+                               "a prompt file when both are set). Supports {{ }} placeholders.",
+                "ui:widget": "textarea",
             },
             "artifacts": {
                 "type": "array",
@@ -141,6 +156,7 @@ class CliAgentExecutor(BaseExecutor):
         skills = params.get("skills") or []
         extra_context = params.get("context") or []
         prompt = _as_source(params.get("prompt"))
+        instructions = params.get("instructions") or ""
         artifact_globs = params.get("artifacts") or []
         env_overrides = params.get("env") or {}
         timeout = params.get("timeout", runtime.timeout)
@@ -157,7 +173,13 @@ class CliAgentExecutor(BaseExecutor):
             dest = os.path.join(node_dir, "repos", name)
             await self._emit(context, f"[{agent_name}] Checking out {source.repo} @ {source.ref}...")
             await asyncio.to_thread(resolve_source, source, dest, cache_root)
-            repos_info.append({"name": name, "ref": source.ref, "dir": dest})
+            repos_info.append({
+                "name": name,
+                "ref": source.ref,
+                "dir": dest,
+                "repo": source.repo,
+                "base_sha": _head_sha(dest),
+            })
 
         # 2. Skills -> .agent/skills/<name>
         for source in repositories(skills):
@@ -176,11 +198,21 @@ class CliAgentExecutor(BaseExecutor):
         # 3b. Auto-mount upstream artifacts -> .agent/context/upstream/<node>/
         await self._mount_upstream_artifacts(node_dir, state)
 
-        # 4. Prompt -> .agent/prompt.md
+        # 3c. Run inputs (and the triggering incident) -> .agent/context/
+        _write_run_inputs(node_dir, state.get("inputs") or {})
+
+        # 4. Prompt -> .agent/prompt.md (file Source first, then inline text)
+        prompt_path = os.path.join(node_dir, ".agent", "prompt.md")
         if prompt:
-            dest = os.path.join(node_dir, ".agent", "prompt.md")
             await self._emit(context, f"[{agent_name}] Resolving prompt...")
-            await asyncio.to_thread(resolve_source, prompt, dest, cache_root)
+            await asyncio.to_thread(resolve_source, prompt, prompt_path, cache_root)
+        if instructions:
+            _append_text(prompt_path, instructions)
+
+        # A stale outputs file from an earlier attempt must not leak forward.
+        outputs_path = os.path.join(node_dir, ".agent", "outputs.json")
+        if os.path.exists(outputs_path):
+            os.remove(outputs_path)
 
         # 5. Build env + write the env-file (secrets never touch the process args)
         env = self._build_env(runtime, env_overrides)
@@ -240,6 +272,9 @@ class CliAgentExecutor(BaseExecutor):
             "AGENT_SKILLS_DIR": "/workspace/.agent/skills",
             "AGENT_CONTEXT_DIR": "/workspace/.agent/context",
             "AGENT_PROMPT_FILE": "/workspace/.agent/prompt.md",
+            "AGENT_INPUTS_FILE": "/workspace/.agent/context/inputs.json",
+            "AGENT_INCIDENT_FILE": "/workspace/.agent/context/incident.md",
+            "AGENT_OUTPUTS_FILE": "/workspace/.agent/outputs.json",
         }
         # Forward required_env vars from the host environment (backend/.env) so
         # declared-but-unset secrets actually reach the container and a missing
@@ -377,6 +412,7 @@ class CliAgentExecutor(BaseExecutor):
         if artifacts_found is None:
             artifacts_found = self._collect_artifacts(node_dir, artifact_globs)
         artifacts[f"{node_id}_artifacts"] = artifacts_found
+        artifacts[f"{node_id}_outputs"] = _read_outputs(node_dir)
 
         messages = list(state.get("messages", []))
         messages.append({"role": "assistant", "content": message})
@@ -416,6 +452,57 @@ def _asset_name(source) -> str:
     if source.path:
         return os.path.basename(source.path.rstrip("/")) or repo_name(source.repo)
     return repo_name(source.repo)
+
+
+def _head_sha(repo_dir: str) -> Optional[str]:
+    """The commit a working repo was checked out at (None if not a git repo)."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo_dir,
+            capture_output=True, text=True, check=True,
+        )
+        return proc.stdout.strip() or None
+    except (subprocess.CalledProcessError, FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _append_text(path: str, text: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    existing = ""
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as f:
+            existing = f.read()
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"{existing.rstrip()}\n\n{text}" if existing.strip() else text)
+
+
+def _write_run_inputs(node_dir: str, inputs: Dict[str, Any]) -> None:
+    """Expose the run inputs to the agent as files under .agent/context/."""
+    if not inputs:
+        return
+    context_dir = os.path.join(node_dir, ".agent", "context")
+    os.makedirs(context_dir, exist_ok=True)
+    with open(os.path.join(context_dir, "inputs.json"), "w", encoding="utf-8") as f:
+        json.dump(inputs, f, indent=2, default=str)
+    incident = inputs.get("incident")
+    if isinstance(incident, dict):
+        from src.triggers.normalize import incident_markdown
+
+        with open(os.path.join(context_dir, "incident.md"), "w", encoding="utf-8") as f:
+            f.write(incident_markdown(incident))
+
+
+def _read_outputs(node_dir: str) -> Dict[str, Any]:
+    """The JSON object the agent wrote to .agent/outputs.json ({} if none/invalid)."""
+    path = os.path.join(node_dir, ".agent", "outputs.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _copy_file(path: str, dest_dir: str) -> None:

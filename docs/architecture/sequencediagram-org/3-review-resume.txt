@@ -1,0 +1,41 @@
+title Human review (HITL) and resume
+autonumber 1
+
+actor Reviewer
+participant "Dashboard" as UI
+participant "FastAPI\nroutes/workflows.py" as API
+database "Postgres\n(app tables)" as DB
+participant "Worker thread\nrun_workflow_sync" as W
+participant "LangGraph graph" as LG
+database "Checkpointer" as CP
+participant "EventBus" as Bus
+
+Reviewer->UI: Approve or Reject (+ comment)
+UI->API: POST /workflows/{thread_id}/review {decision, comment, reviewer}
+API->DB: execution.status == paused?
+opt not paused
+API-->UI: 400
+end
+API->DB: UPDATE status=running WHERE status=paused (atomic claim)
+opt someone else claimed it first
+API-->UI: 409 already reviewed
+end
+API->W: add_task(run_workflow_sync, is_resume=True, decision)
+API-->UI: {status: resumed or rejected}
+
+W->LG: compile_workflow(...) again with the same checkpointer
+W->LG: update_state({thread_id}, approval_status, reviewer, comment)
+LG->CP: write checkpoint with the verdict
+
+alt rejected
+W->DB: status=rejected, completed
+W->Bus: publish_sync {event: rejected}
+note over W,LG: Gated node never runs.\nGraph is abandoned.
+else approved
+W->DB: status=running
+W->Bus: publish_sync {event: resume}
+W->LG: graph.stream(None, {thread_id})
+LG->CP: load paused checkpoint
+note over LG: Continues at the interrupted node.\nSame per-node loop as diagram 2.
+W->LG: get_state: paused again, failed, or completed
+end

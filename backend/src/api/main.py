@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from src.db.session import init_db
 from src.engine.checkpointer import init_checkpointer, close_checkpointer
-from src.api.routes import workflows, mcp, events, node_types, agents, runtimes
+from src.api.routes import workflows, mcp, events, node_types, agents, runtimes, triggers
 from src.registry.seed_node_types import seed_node_types
 from src.config.parser import load_runtimes
 from src.registry.runtime_registry import register_runtimes
@@ -80,3 +80,4 @@ app.include_router(workflows.router, prefix="/workflows", tags=["Workflows"])
 app.include_router(runtimes.router, prefix="/runtimes", tags=["Runtimes"])
 app.include_router(mcp.router, prefix="/mcp-registry", tags=["MCP Registry"])
 app.include_router(events.router, prefix="/events", tags=["Events"])
+app.include_router(triggers.router, prefix="/triggers", tags=["Triggers"])

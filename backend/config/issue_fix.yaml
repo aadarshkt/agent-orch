@@ -1,0 +1,213 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Alert -> Draft PR
+#
+# A production error in, a reviewable draft pull request out, and the link
+# posted back on the alert. Works for any GitHub repo the token can push to:
+# change `workflow.inputs` (or override them per trigger) and re-import.
+#
+#   Sentry / Datadog / GitHub issue / generic webhook
+#     -> POST /triggers/<workflow_id>/<source>   (verify, normalize, dedupe)
+#     -> triage ──(actionable)──> reproduce ──> fix ──> review ──> open_pr ──> notify
+#          │                         │           │                   │          ^
+#          ├──(not a code bug)───────┼───────────┼───────────────────┼──────────┤
+#          └──(failed)──> postmortem <───────────┴───────────────────┘          │
+#                              └─────────────────────────────────────────────────┘
+#
+# Every agent reads the normalized incident from .agent/context/incident.md.
+# Handoffs between nodes are files (mounted at .agent/context/upstream/<node>/):
+#   triage     triage.md, triage.json          root cause + files to touch
+#   reproduce  repro.patch, repro_report.md    a test that FAILS on the bug
+#   fix        fix.patch, verification.md      the fix; full suite passes
+#   review     review.md                       independent verdict
+#   open_pr    draft PR: commit 1 = failing test, commit 2 = fix
+#   notify     PR link (or the postmortem) posted back to the alert
+#
+# Requirements (backend/.env): OPENROUTER_API_KEY, GITHUB_TOKEN with push +
+# pull-request access to the target repo, the aider-agent and openrouter-agent
+# images, and the secret env vars named by the triggers below. Optional:
+# SENTRY_AUTH_TOKEN, DD_API_KEY (post-back), AGENT_ORCH_PUBLIC_URL (run links).
+#
+# Import, then point your alert source at the printed webhook URLs:
+#   curl -s localhost:8010/workflows/import -H 'content-type: application/json' \
+#     -d '{"yaml_path": "config/issue_fix.yaml"}'
+# Or start a run by hand from pasted logs:
+#   curl -s localhost:8010/triggers/<id>/generic -H 'content-type: application/json' \
+#     -H "X-Agent-Orch-Token: $AGENT_ORCH_WEBHOOK_TOKEN" \
+#     -d '{"title": "...", "logs": "Traceback (most recent call last): ..."}'
+#
+# Full guide: docs/issue-fix-workflow.md
+# ─────────────────────────────────────────────────────────────────────────────
+version: 1
+
+agents:
+  # 1. Triage (read-only): root cause, affected files, and whether this is a
+  #    code bug at all. outputs: {actionable, summary, root_cause, files}
+  alert-fix-triage:
+    type: cli_agent
+    runtime: aider-agent
+    inputs:
+      repos:
+        - { repo: "{{ repo }}", ref: "{{ ref }}" }
+      command: ["/agent/stages/triage.sh"]
+      artifacts: ["triage.md", "triage.json"]
+      timeout: 600
+      env:
+        AIDER_MODEL: "{{ model }}"
+      instructions: >-
+        Prefer the innermost application frame of the stack trace as the
+        starting point. Distinguish the symptom (where it crashed) from the
+        cause (where the wrong value came from).
+
+  # 2. Reproduce: a regression test that fails on the current code. The stage
+  #    only lets the agent touch test files.
+  #    outputs: {reproduced, baseline_passed, test_files, attempts}
+  alert-fix-reproduce:
+    type: cli_agent
+    runtime: aider-agent
+    inputs:
+      repos:
+        - { repo: "{{ repo }}", ref: "{{ ref }}" }
+      command: ["/agent/stages/reproduce.sh"]
+      artifacts: ["repro.patch", "repro_report.md"]
+      timeout: 900
+      env:
+        AIDER_MODEL: "{{ model }}"
+        SETUP_CMD: "{{ setup_command }}"
+        TEST_CMD: "{{ test_command }}"
+        REQUIRE_REPRO: "true"
+        REPRO_ATTEMPTS: "2"
+      instructions: >-
+        Name the test after the behavior, not the bug ticket. Use the smallest
+        input that shows the failure.
+
+  # 3. Fix + verify: commits the regression test, fixes the code with the test
+  #    read-only, then runs the full suite independently of the agent.
+  #    outputs: {tests_passed, files_changed, attempts}
+  alert-fix-fix:
+    type: cli_agent
+    runtime: aider-agent
+    inputs:
+      repos:
+        - { repo: "{{ repo }}", ref: "{{ ref }}" }
+      command: ["/agent/stages/fix.sh"]
+      artifacts: ["fix.patch", "verification.md"]
+      timeout: 1200
+      env:
+        AIDER_MODEL: "{{ model }}"
+        SETUP_CMD: "{{ setup_command }}"
+        TEST_CMD: "{{ test_command }}"
+        FIX_ATTEMPTS: "2"
+        REPRO_COMMIT_MESSAGE: "test: reproduce {{ incident.title }}"
+
+  # 4. Review: a different model checks the fix against the root cause. Its
+  #    VERDICT line is surfaced at the top of the PR.
+  alert-fix-review:
+    type: cli_agent
+    runtime: openrouter-agent
+    inputs:
+      artifacts: ["review.md"]
+      env:
+        OPENROUTER_OUTPUT: "review.md"
+        OPENROUTER_MODEL: "{{ review_model }}"
+      instructions: >-
+        You are a senior engineer reviewing an automated bug fix before a human
+        sees it. The upstream files hold the triage (triage.md), the regression
+        test (repro.patch, repro_report.md) and the fix (fix.patch,
+        verification.md). Answer briefly, in markdown:
+        (1) Does the fix address the stated root cause, or only the symptom?
+        (2) Would the regression test have failed before the fix and does it
+        assert the right behavior? (3) Risks: behavior changes for other
+        callers, unrelated edits, missing edge cases. (4) What should the human
+        reviewer look at first? End with exactly one line:
+        VERDICT: SHIP - <one sentence>   or   VERDICT: DO NOT SHIP - <one sentence>
+
+  # 3b. Postmortem: when a stage fails, explain why instead of failing silently.
+  alert-fix-postmortem:
+    type: cli_agent
+    runtime: openrouter-agent
+    inputs:
+      artifacts: ["postmortem.md"]
+      env:
+        OPENROUTER_OUTPUT: "postmortem.md"
+        OPENROUTER_MODEL: "{{ review_model }}"
+      instructions: >-
+        An automated attempt to fix this incident stopped before opening a PR:
+        "{{ incident.title }}". Using whatever upstream files exist (triage,
+        reproduction, fix, verification), explain in under 150 words where it
+        stopped, the most likely reason, and the concrete next step for a human.
+        Output markdown only.
+
+  # 5. Draft PR, built for a fast human review.
+  alert-fix-open-pr:
+    type: github_pr
+    inputs:
+      source_node: fix
+      branch: "agent-orch/fix-{{ incident.slug }}"
+      title: "fix: {{ incident.title }}"
+      commit_message: "fix: {{ incident.title }}"
+      draft: true
+      labels: ["agent-orch", "automated-fix"]
+      test_command: "{{ test_command }}"
+      review_from: "review/review.md"
+      sections:
+        - { title: "Root cause analysis", from: "triage/triage.md" }
+        - { title: "Automated review", from: "review/review.md" }
+        - { title: "Reproduction", from: "reproduce/repro_report.md", collapsed: true }
+        - { title: "Verification", from: "fix/verification.md", collapsed: true }
+
+  # 6. Close the loop on the alert: PR link on success, postmortem otherwise.
+  alert-fix-notify:
+    type: alert_notify
+    inputs: {}
+
+workflow:
+  name: "Alert to Draft PR"
+  description: "Production alert in, reproduced + tested + reviewed draft PR out, link posted back on the alert."
+  # Set to true and add `requires_approval: true` to open_pr to gate PRs on a
+  # human in the dashboard. Off by default: a draft PR is already a gate.
+  hitl_enabled: false
+
+  # Defaults for every run. Triggers override them per alert source/project.
+  inputs:
+    repo: "https://github.com/aadarshkt/ao-demo-cart.git"
+    ref: "main"
+    setup_command: "pip install -q pytest"
+    test_command: "python -m pytest -q"
+    model: "openrouter/poolside/laguna-s-2.1:free"
+    review_model: "google/gemma-4-31b-it:free"
+
+  triggers:
+    - source: sentry
+      secret_env: SENTRY_CLIENT_SECRET
+      dedupe_window_hours: 24
+      # Route a Sentry project to its repo:
+      # match: { project: "cart-api" }
+      # inputs: { repo: "https://github.com/acme/cart-api.git", test_command: "make test" }
+    - source: datadog
+      secret_env: AGENT_ORCH_WEBHOOK_TOKEN
+    - source: github
+      secret_env: GITHUB_WEBHOOK_SECRET
+      match: { labels: "agent-fix" }      # only issues labeled agent-fix
+    - source: generic
+      secret_env: AGENT_ORCH_WEBHOOK_TOKEN
+
+  nodes:
+    - { id: triage, agent: alert-fix-triage }
+    - { id: reproduce, agent: alert-fix-reproduce }
+    - { id: fix, agent: alert-fix-fix }
+    - { id: review, agent: alert-fix-review }
+    - { id: postmortem, agent: alert-fix-postmortem }
+    - { id: open_pr, agent: alert-fix-open-pr }
+    - { id: notify, agent: alert-fix-notify }
+  edges:
+    - { from: triage, to: reproduce, condition: "status == 'completed' and outputs.get('triage', {}).get('actionable', True)" }
+    - { from: triage, to: notify, condition: "status == 'completed'" }
+    - { from: triage, to: postmortem, condition: failure }
+    - { from: reproduce, to: fix, condition: success }
+    - { from: reproduce, to: postmortem, condition: failure }
+    - { from: fix, to: review, condition: success }
+    - { from: fix, to: postmortem, condition: failure }
+    - { from: review, to: open_pr }
+    - { from: open_pr, to: notify, condition: success }
+    - { from: open_pr, to: postmortem, condition: failure }
+    - { from: postmortem, to: notify }

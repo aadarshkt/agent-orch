@@ -106,6 +106,39 @@ cd backend
 python3 -m compileall -q src
 ```
 
+The test suite runs under `unittest` and needs the backend on the path:
+
+```bash
+cd backend
+PYTHONPATH=. python tests/test_workflow_execution.py
+```
+
+Each file in `tests/` is self-contained, so run them individually rather than
+via `unittest discover` (there is no `__init__.py` in that directory).
+
+### Reviewing a paused run
+
+A run paused at an approval gate is decided over HTTP, and the gate is derived
+from the persisted execution row rather than the event stream — so a reviewer
+can reload the page, or act on the run later, without missing it.
+
+```bash
+curl -X POST localhost:8010/workflows/<thread_id>/review \
+  -H 'Content-Type: application/json' \
+  -d '{"decision":"approve","reviewer":"ada","comment":"looks right"}'
+
+curl -X POST localhost:8010/workflows/<thread_id>/review \
+  -H 'Content-Type: application/json' \
+  -d '{"decision":"reject","reviewer":"ada","comment":"the diff is too large"}'
+```
+
+Approving continues the run; rejecting ends it as `rejected` and nothing
+downstream of the gate executes. The verdict, reviewer, and comment are stored
+in the checkpoint and readable at `GET /workflows/<thread_id>/state`. Each gate
+accepts exactly one decision — a repeat submission is refused rather than
+re-running the step. `POST /workflows/<thread_id>/resume` remains as an alias
+for approval.
+
 Frontend checks can be run with:
 
 ```bash

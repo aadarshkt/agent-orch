@@ -15,10 +15,7 @@ export default function Navbar() {
   return (
     <nav className="navbar">
       <div className="navbar-left">
-        <Link href="/" className="btn btn-ghost btn-sm">
-          Back to home
-        </Link>
-        <Link href="/dashboard" className="navbar-brand">
+        <Link href="/" className="navbar-brand" aria-label="Agent Orchestrator — home">
           <span className="navbar-title">Agent Orchestrator</span>
         </Link>
       </div>

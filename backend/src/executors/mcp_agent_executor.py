@@ -17,7 +17,6 @@ class MCPAgentExecutor(BaseExecutor):
 
     runtime_kind = "mcp"
     display_name = "MCP Agent"
-    icon = "plug"
     input_schema = {
         "type": "object",
         "properties": {

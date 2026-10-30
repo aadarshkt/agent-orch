@@ -3,9 +3,9 @@ Seed Node Types (registry-derived).
 
 Node types are no longer hand-maintained here. They are derived from the
 executor registry: each @register_executor class declares its own
-``input_schema``, ``runtime_kind``, ``display_name``, and ``icon``. This seeder
-syncs that metadata into the node_types table (upsert) on startup, so adding a
-new executor auto-registers its node type with zero seed edits.
+``input_schema``, ``runtime_kind``, and ``display_name``. This seeder syncs that
+metadata into the node_types table (upsert) on startup, so adding a new executor
+auto-registers its node type with zero seed edits.
 """
 import uuid
 from datetime import datetime
@@ -29,7 +29,6 @@ def _build_node_types() -> list:
                 "executor_key": ex["key"],
                 "config_schema": ex["input_schema"],
                 "default_config": ex["default_config"],
-                "icon": ex["icon"],
             }
         )
     return node_types
@@ -55,7 +54,6 @@ def seed_node_types():
                 existing.executor_key = node_type_data["executor_key"]
                 existing.config_schema = node_type_data["config_schema"]
                 existing.default_config = node_type_data["default_config"]
-                existing.icon = node_type_data["icon"]
                 existing.updated_at = datetime.utcnow()
                 print(f"  Synced node type: {node_type_data['type_key']}")
             else:
@@ -67,7 +65,6 @@ def seed_node_types():
                     executor_key=node_type_data["executor_key"],
                     config_schema=node_type_data["config_schema"],
                     default_config=node_type_data.get("default_config"),
-                    icon=node_type_data.get("icon"),
                     created_at=datetime.utcnow(),
                     updated_at=datetime.utcnow(),
                 )

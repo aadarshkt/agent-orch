@@ -15,7 +15,6 @@ class SleepExecutor(BaseExecutor):
 
     runtime_kind = "none"
     display_name = "Sleep / Delay"
-    icon = "clock"
     input_schema = {
         "type": "object",
         "properties": {

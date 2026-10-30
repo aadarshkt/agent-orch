@@ -12,6 +12,7 @@ from src.config.schema import WorkflowConfig
 from src.engine.state import WorkflowState
 from src.registry.executor_registry import get_executor
 from src.registry.base_executor import ExecutionContext
+from src.engine.templating import render, template_context, node_outputs
 
 
 def make_node_func(
@@ -35,12 +36,17 @@ def make_node_func(
             executor_key = node_type_data["executor_key"]
             executor = get_executor(executor_key)
 
-            # Build the config dict the executor receives
+            # Build the config dict the executor receives. Params are rendered
+            # against the run inputs here, so every executor sees concrete
+            # values and none of them needs to know about templating.
             exec_config = {
                 "id": node_config["id"],
                 "type": agent_data["node_type_key"],
                 "agent_name": agent_data["name"],
-                "params": agent_data["params"],
+                "params": render(
+                    agent_data["params"] or {},
+                    template_context(dict(state), getattr(context, "thread_id", "")),
+                ),
             }
 
             print(f"Executing node: {exec_config['id']} "
@@ -55,6 +61,15 @@ def make_node_func(
                 )
             finally:
                 loop.close()
+
+            # Record that this node finished, whatever the executor chose to
+            # write. This is the only place every node passes through, so it is
+            # the only reliable place to answer "which steps have run".
+            node_id = exec_config["id"]
+            completed = list(result.get("completed_steps") or [])
+            if node_id not in completed:
+                completed.append(node_id)
+            result["completed_steps"] = completed
 
             return result
 
@@ -80,7 +95,9 @@ def evaluate_condition(condition: str, state: WorkflowState) -> bool:
       - 'failure' / 'failed' / 'error': Step failed or has an error
       - 'approved': Step was approved
       - 'rejected': Step was rejected
-      - Boolean / Python expressions: Evaluated with state variables in scope
+      - Boolean / Python expressions: Evaluated with state variables in scope.
+        ``outputs`` maps node id -> the structured outputs that node wrote,
+        e.g. ``outputs['triage'].get('actionable') == True``.
     """
     if not condition or not condition.strip():
         return True
@@ -105,6 +122,8 @@ def evaluate_condition(condition: str, state: WorkflowState) -> bool:
         "approval_status": state.get("approval_status"),
         "current_step": state.get("current_step"),
         "artifacts": state.get("artifacts") or {},
+        "outputs": node_outputs(state.get("artifacts") or {}),
+        "inputs": state.get("inputs") or {},
         "messages": state.get("messages") or [],
         "state": state,
         "True": True,

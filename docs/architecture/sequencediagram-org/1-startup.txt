@@ -1,0 +1,21 @@
+title Startup (once per backend process)
+autonumber 1
+
+participant "FastAPI lifespan\napi/main.py" as Main
+participant "src.executors" as Exec
+participant "Executor registry\n(in memory)" as XReg
+database "Postgres\n(app tables)" as DB
+participant "Runtime registry\n(in memory)" as RReg
+participant "Checkpointer" as CP
+
+Main->Exec: import src.executors
+Exec->XReg: @register_executor("cli_agent") registers CliAgentExecutor
+Main->DB: init_db() creates tables
+Main->DB: seed_node_types()\n(cli_agent node type, executor_key "cli_agent")
+Main->RReg: register_runtimes(load_runtimes("config/runtimes.yaml"))
+Main->CP: init_checkpointer(app)
+alt Postgres reachable
+CP-->Main: app.state.checkpointer = PostgresSaver(pool)
+else Postgres down
+CP-->Main: app.state.checkpointer = MemorySaver()
+end

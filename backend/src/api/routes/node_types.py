@@ -27,7 +27,6 @@ def get_node_types(db: Session = Depends(get_db)):
             "executor_key": nt.executor_key,
             "config_schema": nt.config_schema,
             "default_config": nt.default_config,
-            "icon": nt.icon,
             "created_at": nt.created_at.isoformat() if nt.created_at else None,
         }
         for nt in node_types
@@ -55,6 +54,5 @@ def get_node_type(type_key: str, db: Session = Depends(get_db)):
         "executor_key": nt.executor_key,
         "config_schema": nt.config_schema,
         "default_config": nt.default_config,
-        "icon": nt.icon,
         "created_at": nt.created_at.isoformat() if nt.created_at else None,
     }
